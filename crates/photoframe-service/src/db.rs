@@ -1,7 +1,8 @@
-use std::{fs, path::Path};
+use std::{collections::HashSet, fs, path::Path};
 
 use anyhow::{Context, Result, bail};
-use rusqlite::{Connection, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction};
+use serde::Serialize;
 
 const MIGRATIONS: &[Migration] = &[Migration {
     version: 1,
@@ -27,6 +28,21 @@ struct Migration {
     sql: &'static str,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredImage {
+    pub id: i64,
+    pub file_name: String,
+    pub sort_index: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdminSettings {
+    pub slideshow_interval_seconds: u64,
+    pub night_mode_start: String,
+    pub night_mode_end: String,
+}
+
 pub fn initialize(database_path: &Path) -> Result<()> {
     ensure_parent_directory(database_path)?;
 
@@ -37,6 +53,222 @@ pub fn initialize(database_path: &Path) -> Result<()> {
 
     run_migrations(&mut conn)?;
 
+    Ok(())
+}
+
+pub fn list_images(database_path: &Path) -> Result<Vec<StoredImage>> {
+    let conn = open_connection(database_path)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, file_name, sort_index, created_at
+             FROM images
+             ORDER BY sort_index ASC, id ASC",
+        )
+        .context("failed to prepare image list query")?;
+
+    let images = stmt
+        .query_map([], |row| {
+            Ok(StoredImage {
+                id: row.get(0)?,
+                file_name: row.get(1)?,
+                sort_index: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })
+        .context("failed to query image list")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to decode image list rows")?;
+
+    Ok(images)
+}
+
+pub fn insert_image(database_path: &Path, file_name: &str) -> Result<StoredImage> {
+    let mut conn = open_connection(database_path)?;
+    let tx = conn
+        .transaction()
+        .context("failed to begin image insert transaction")?;
+    let next_sort_index: i64 = tx
+        .query_row("SELECT COALESCE(MAX(sort_index) + 1, 0) FROM images", [], |row| {
+            row.get(0)
+        })
+        .context("failed to compute next image sort index")?;
+
+    tx.execute(
+        "INSERT INTO images(file_name, sort_index, created_at)
+         VALUES(?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+        (file_name, next_sort_index),
+    )
+    .context("failed to insert image metadata")?;
+
+    let image_id = tx.last_insert_rowid();
+    let image = tx
+        .query_row(
+            "SELECT id, file_name, sort_index, created_at FROM images WHERE id = ?",
+            [image_id],
+            |row| {
+                Ok(StoredImage {
+                    id: row.get(0)?,
+                    file_name: row.get(1)?,
+                    sort_index: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            },
+        )
+        .context("failed to load inserted image metadata")?;
+
+    tx.commit().context("failed to commit image insert")?;
+
+    Ok(image)
+}
+
+pub fn reorder_images(database_path: &Path, ordered_ids: &[i64]) -> Result<()> {
+    let mut conn = open_connection(database_path)?;
+    let tx = conn
+        .transaction()
+        .context("failed to begin image reorder transaction")?;
+
+    let current_ids = load_all_image_ids(&tx)?;
+    let current_set: HashSet<i64> = current_ids.into_iter().collect();
+    let requested_set: HashSet<i64> = ordered_ids.iter().copied().collect();
+
+    if current_set != requested_set || ordered_ids.len() != requested_set.len() {
+        bail!("reorder payload must contain each image id exactly once");
+    }
+
+    let reorder_window = i64::try_from(ordered_ids.len())
+        .context("image count does not fit in sqlite integer range")?;
+    tx.execute(
+        "UPDATE images SET sort_index = sort_index + ?",
+        [reorder_window],
+    )
+    .context("failed preparing transient sort indexes for reorder")?;
+
+    for (index, image_id) in ordered_ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE images SET sort_index = ? WHERE id = ?",
+            (index as i64, image_id),
+        )
+        .with_context(|| format!("failed updating sort index for image id {image_id}"))?;
+    }
+
+    tx.commit().context("failed to commit image reorder")?;
+
+    Ok(())
+}
+
+pub fn delete_image(database_path: &Path, image_id: i64) -> Result<Option<String>> {
+    let mut conn = open_connection(database_path)?;
+    let tx = conn
+        .transaction()
+        .context("failed to begin image delete transaction")?;
+
+    let existing = tx
+        .query_row(
+            "SELECT file_name, sort_index FROM images WHERE id = ?",
+            [image_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .context("failed to load image metadata for delete")?;
+
+    let Some((file_name, removed_sort_index)) = existing else {
+        tx.commit()
+            .context("failed to commit noop image delete transaction")?;
+        return Ok(None);
+    };
+
+    tx.execute("DELETE FROM images WHERE id = ?", [image_id])
+        .with_context(|| format!("failed to delete image metadata for id {image_id}"))?;
+    tx.execute(
+        "UPDATE images SET sort_index = sort_index - 1 WHERE sort_index > ?",
+        [removed_sort_index],
+    )
+    .with_context(|| format!("failed to compact sort indexes after deleting id {image_id}"))?;
+
+    tx.commit().context("failed to commit image delete")?;
+    Ok(Some(file_name))
+}
+
+pub fn load_admin_settings(database_path: &Path, defaults: &AdminSettings) -> Result<AdminSettings> {
+    let conn = open_connection(database_path)?;
+    let mut settings = defaults.clone();
+    let mut stmt = conn
+        .prepare(
+            "SELECT key, value FROM settings
+             WHERE key IN ('slideshow_interval_seconds', 'night_mode_start', 'night_mode_end')",
+        )
+        .context("failed to prepare settings query")?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            let key: String = row.get(0)?;
+            let value: String = row.get(1)?;
+            Ok((key, value))
+        })
+        .context("failed to query settings")?;
+
+    for row in rows {
+        let (key, value) = row.context("failed decoding settings row")?;
+        match key.as_str() {
+            "slideshow_interval_seconds" => {
+                settings.slideshow_interval_seconds = value.parse().with_context(|| {
+                    "invalid numeric value for settings.slideshow_interval_seconds"
+                })?;
+            }
+            "night_mode_start" => settings.night_mode_start = value,
+            "night_mode_end" => settings.night_mode_end = value,
+            _ => {}
+        }
+    }
+
+    Ok(settings)
+}
+
+pub fn save_admin_settings(database_path: &Path, settings: &AdminSettings) -> Result<()> {
+    let mut conn = open_connection(database_path)?;
+    let tx = conn
+        .transaction()
+        .context("failed to begin settings transaction")?;
+
+    upsert_setting(
+        &tx,
+        "slideshow_interval_seconds",
+        &settings.slideshow_interval_seconds.to_string(),
+    )?;
+    upsert_setting(&tx, "night_mode_start", &settings.night_mode_start)?;
+    upsert_setting(&tx, "night_mode_end", &settings.night_mode_end)?;
+
+    tx.commit().context("failed to commit settings transaction")?;
+    Ok(())
+}
+
+fn open_connection(database_path: &Path) -> Result<Connection> {
+    let conn = Connection::open(database_path)
+        .with_context(|| format!("failed to open sqlite db at {}", database_path.display()))?;
+    conn.execute_batch("PRAGMA foreign_keys = ON;")
+        .context("failed to enable sqlite foreign_keys")?;
+    Ok(conn)
+}
+
+fn load_all_image_ids(tx: &Transaction<'_>) -> Result<Vec<i64>> {
+    let mut stmt = tx
+        .prepare("SELECT id FROM images")
+        .context("failed to prepare image id query")?;
+    let ids = stmt
+        .query_map([], |row| row.get(0))
+        .context("failed to query image ids")?
+        .collect::<rusqlite::Result<Vec<i64>>>()
+        .context("failed decoding image ids")?;
+    Ok(ids)
+}
+
+fn upsert_setting(tx: &Transaction<'_>, key: &str, value: &str) -> Result<()> {
+    tx.execute(
+        "INSERT INTO settings(key, value) VALUES(?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+    .with_context(|| format!("failed to upsert setting '{key}'"))?;
     Ok(())
 }
 

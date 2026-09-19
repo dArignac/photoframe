@@ -1,3 +1,4 @@
+mod admin;
 mod config;
 mod db;
 
@@ -6,16 +7,16 @@ use std::net::SocketAddr;
 use anyhow::{Context, Result};
 use axum::{
     Router,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     response::{Html, IntoResponse},
-    routing::get,
+    routing::{delete, get, post},
 };
 use config::AppConfig;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 
 #[derive(Clone)]
-struct AppState {
+pub(crate) struct AppState {
     config: AppConfig,
 }
 
@@ -36,8 +37,18 @@ async fn main() -> Result<()> {
 
     let app = Router::new()
         .route("/health", get(health))
-        .route("/admin", get(admin))
+        .route("/admin", get(admin::admin_page))
+        .route("/admin/images/{file_name}", get(admin::image_thumbnail))
+        .route("/admin/api/images", get(admin::list_images))
+        .route("/admin/api/images/{image_id}", delete(admin::delete_image))
+        .route("/admin/api/upload", post(admin::upload_image))
+        .route("/admin/api/reorder", post(admin::reorder_images))
+        .route(
+            "/admin/api/settings",
+            get(admin::get_settings).post(admin::update_settings),
+        )
         .route("/frame", get(frame))
+        .layer(DefaultBodyLimit::max(1024 * 1024 * 100))
         .with_state(state);
 
     info!("photoframe service started on http://{addr}");
@@ -53,8 +64,11 @@ async fn main() -> Result<()> {
 }
 
 fn init_logging() {
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(env_filter)
         .with_target(false)
         .compact()
         .init();
@@ -62,10 +76,6 @@ fn init_logging() {
 
 async fn health() -> &'static str {
     "ok"
-}
-
-async fn admin() -> impl IntoResponse {
-    Html("<h1>PhotoFrame Admin</h1><p>Bootstrap complete.</p>")
 }
 
 async fn frame(State(state): State<AppState>) -> impl IntoResponse {

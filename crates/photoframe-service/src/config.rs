@@ -204,7 +204,7 @@ fn validate(config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
-fn validate_hh_mm(field: &str, value: &str) -> Result<()> {
+pub(crate) fn validate_hh_mm(field: &str, value: &str) -> Result<()> {
     let parts: Vec<&str> = value.split(':').collect();
     if parts.len() != 2 {
         bail!("{field} must be in HH:MM format");

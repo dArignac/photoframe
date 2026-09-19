@@ -8,11 +8,24 @@ Bootstrapped Rust service for a Raspberry Pi photo frame application.
 cargo run -p photoframe-service -- --config ./config.example.yaml
 ```
 
+Logging defaults to `info` if `RUST_LOG` is unset. To increase verbosity, for example:
+
+```bash
+RUST_LOG=debug cargo run -p photoframe-service -- --config ./config.example.yaml
+```
+
 The service starts with:
 
 - `GET /health` basic liveness endpoint (`ok`)
-- `GET /admin` bootstrap admin placeholder
+- `GET /admin` admin UI (upload, reorder, settings)
 - `GET /frame` bootstrap frame placeholder
+- `GET /admin/api/images` list images
+- `DELETE /admin/api/images/{image_id}` remove an image and close ordering gaps
+- `GET /admin/images/{file_name}` serve uploaded image files for admin thumbnails
+- `POST /admin/api/upload` upload one or more images via multipart field `image` (repeat field for each file)
+- `POST /admin/api/reorder` reorder images with JSON `{ "ordered_ids": [..] }`
+- `GET /admin/api/settings` read effective slideshow/night settings
+- `POST /admin/api/settings` persist slideshow/night settings
 
 On startup, the service initializes SQLite and runs schema migrations for:
 
