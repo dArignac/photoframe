@@ -34,6 +34,12 @@ On startup, the service initializes SQLite and runs schema migrations for:
 - `settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)`
 - `images(id INTEGER PRIMARY KEY, file_name TEXT NOT NULL, sort_index INTEGER NOT NULL, created_at TEXT NOT NULL)`
 
+Before starting the HTTP server, runtime storage paths are validated:
+
+- `image_dir` is created if missing and must be writable
+- parent directory of `database_path` is created if missing and must be writable
+- `database_path` must be a file path (not a directory)
+
 ## Configuration precedence
 
 1. Defaults built into the binary
