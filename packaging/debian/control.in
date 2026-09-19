@@ -1,0 +1,11 @@
+Package: photoframe
+Version: __VERSION__
+Section: misc
+Priority: optional
+Architecture: __ARCH__
+Maintainer: Alexander Herrmann
+Depends: libc6 (>= 2.31), systemd
+Description: Raspberry Pi photo frame service
+ Browser-based local-network photo frame with admin upload/reorder UI,
+ night mode scheduling, and a fullscreen display endpoint.
+

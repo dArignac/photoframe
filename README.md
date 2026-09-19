@@ -60,3 +60,19 @@ Supported env vars:
 - `PHOTOFRAME_DISPLAY_FIT_MODE` (`contain` or `cover`)
 
 Frame clients poll state/config at least every 60 seconds (or faster if configured), so slideshow interval and night-mode setting changes are applied within that window.
+
+## Debian packaging and service
+
+Build a Debian package:
+
+```bash
+./scripts/build-deb.sh 0.1.0
+```
+
+The package installs:
+
+- `/usr/bin/photoframe-service`
+- `/etc/photoframe/config.yaml` (conffile)
+- `/lib/systemd/system/photoframe.service`
+
+Package maintainer scripts will enable and (re)start `photoframe.service` on install/configure, and stop/disable it on remove.

@@ -1,0 +1,13 @@
+[Unit]
+Description=PhotoFrame Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/photoframe-service --config /etc/photoframe/config.yaml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
