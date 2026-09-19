@@ -14,6 +14,11 @@ The service starts with:
 - `GET /admin` bootstrap admin placeholder
 - `GET /frame` bootstrap frame placeholder
 
+On startup, the service initializes SQLite and runs schema migrations for:
+
+- `settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)`
+- `images(id INTEGER PRIMARY KEY, file_name TEXT NOT NULL, sort_index INTEGER NOT NULL, created_at TEXT NOT NULL)`
+
 ## Configuration precedence
 
 1. Defaults built into the binary

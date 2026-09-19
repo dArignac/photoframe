@@ -1,4 +1,5 @@
 mod config;
+mod db;
 
 use std::net::SocketAddr;
 
@@ -23,6 +24,7 @@ async fn main() -> Result<()> {
     init_logging();
 
     let config = AppConfig::load().context("failed to load configuration")?;
+    db::initialize(&config.database_path).context("failed to initialize sqlite database")?;
     let state = AppState {
         config: config.clone(),
     };
