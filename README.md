@@ -18,9 +18,11 @@ The service starts with:
 
 - `GET /health` basic liveness endpoint (`ok`)
 - `GET /admin` admin UI (upload, reorder, settings)
-- `GET /frame` bootstrap frame placeholder
+- `GET /frame` fullscreen frame UI with automatic rotation
+- `GET /frame/api/state` frame state/config payload (images, interval, fit mode, night-mode active flag)
 - `GET /admin/api/images` list images
 - `DELETE /admin/api/images/{image_id}` remove an image and close ordering gaps
+- `GET /images/{file_name}` serve uploaded image files for frame rendering
 - `GET /admin/images/{file_name}` serve uploaded image files for admin thumbnails
 - `POST /admin/api/upload` upload one or more images via multipart field `image` (repeat field for each file)
 - `POST /admin/api/reorder` reorder images with JSON `{ "ordered_ids": [..] }`
@@ -50,3 +52,5 @@ Supported env vars:
 - `PHOTOFRAME_NIGHT_MODE_END`
 - `PHOTOFRAME_FRAME_POLL_INTERVAL_SECONDS`
 - `PHOTOFRAME_DISPLAY_FIT_MODE` (`contain` or `cover`)
+
+Frame clients poll state/config at least every 60 seconds (or faster if configured), so slideshow interval and night-mode setting changes are applied within that window.

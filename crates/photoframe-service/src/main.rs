@@ -1,14 +1,14 @@
 mod admin;
 mod config;
 mod db;
+mod frame;
 
 use std::net::SocketAddr;
 
 use anyhow::{Context, Result};
 use axum::{
     Router,
-    extract::{DefaultBodyLimit, State},
-    response::{Html, IntoResponse},
+    extract::DefaultBodyLimit,
     routing::{delete, get, post},
 };
 use config::AppConfig;
@@ -38,6 +38,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/admin", get(admin::admin_page))
+        .route("/images/{file_name}", get(admin::image_thumbnail))
         .route("/admin/images/{file_name}", get(admin::image_thumbnail))
         .route("/admin/api/images", get(admin::list_images))
         .route("/admin/api/images/{image_id}", delete(admin::delete_image))
@@ -47,7 +48,8 @@ async fn main() -> Result<()> {
             "/admin/api/settings",
             get(admin::get_settings).post(admin::update_settings),
         )
-        .route("/frame", get(frame))
+        .route("/frame", get(frame::frame_page))
+        .route("/frame/api/state", get(frame::frame_state))
         .layer(DefaultBodyLimit::max(1024 * 1024 * 100))
         .with_state(state);
 
@@ -76,14 +78,6 @@ fn init_logging() {
 
 async fn health() -> &'static str {
     "ok"
-}
-
-async fn frame(State(state): State<AppState>) -> impl IntoResponse {
-    let message = format!(
-        "<h1>PhotoFrame Frame</h1><p>Interval: {}s</p>",
-        state.config.slideshow_interval_seconds
-    );
-    Html(message)
 }
 
 async fn shutdown_signal() {

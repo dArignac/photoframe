@@ -25,6 +25,13 @@ impl DisplayFitMode {
             other => bail!("invalid display_fit_mode '{other}', expected contain|cover"),
         }
     }
+
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Contain => "contain",
+            Self::Cover => "cover",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

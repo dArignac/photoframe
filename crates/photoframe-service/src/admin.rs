@@ -31,14 +31,14 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    fn bad_request(message: impl Into<String>) -> Self {
+    pub(crate) fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: message.into(),
         }
     }
 
-    fn internal(err: anyhow::Error) -> Self {
+    pub(crate) fn internal(err: anyhow::Error) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: err.to_string(),
