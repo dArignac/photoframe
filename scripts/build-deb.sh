@@ -6,6 +6,7 @@ PKG_NAME="photoframe"
 
 VERSION="${1:-0.1.0}"
 TARGET="${TARGET:-}"
+COMPRESSION="${COMPRESSION:-xz}"
 
 for cmd in cargo dpkg dpkg-deb; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -64,9 +65,9 @@ install -m 0644 "$ROOT_DIR/packaging/debian/photoframe.service" \
 install -m 0644 "$ROOT_DIR/config.example.yaml" "$STAGE_ROOT/etc/photoframe/config.yaml"
 
 DEB_PATH="$ROOT_DIR/target/package/${PKG_NAME}_${VERSION}_${DEB_ARCH}.deb"
+DPKG_DEB_OPTS=("-Z${COMPRESSION}")
 if dpkg-deb --help 2>/dev/null | grep -q -- '--root-owner-group'; then
-  dpkg-deb --root-owner-group --build "$STAGE_ROOT" "$DEB_PATH" >/dev/null
-else
-  dpkg-deb --build "$STAGE_ROOT" "$DEB_PATH" >/dev/null
+  DPKG_DEB_OPTS+=("--root-owner-group")
 fi
+dpkg-deb "${DPKG_DEB_OPTS[@]}" --build "$STAGE_ROOT" "$DEB_PATH" >/dev/null
 echo "built package: $DEB_PATH"
