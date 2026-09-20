@@ -370,20 +370,72 @@ const ADMIN_HTML: &str = r#"<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PhotoFrame Admin</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 860px; padding: 0 1rem; }
+    body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 960px; padding: 0 1rem; }
     h1, h2 { margin-bottom: 0.6rem; }
     section { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
     form { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
     ul { margin: 0.5rem 0 0; padding: 0; list-style: none; }
-    li { padding: 0.45rem 0.55rem; border: 1px solid #ddd; border-radius: 6px; margin-bottom: 0.5rem; background: #fafafa; cursor: move; display: flex; gap: 0.75rem; align-items: center; }
+    #image-list {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 0.75rem;
+      margin: 1rem 0;
+      padding: 0;
+      list-style: none;
+    }
+    #image-list li {
+      padding: 0.5rem;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      background: #fafafa;
+      cursor: grab;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      box-sizing: border-box;
+      min-width: 0;
+      user-select: none;
+      transition: box-shadow 0.15s ease;
+    }
+    #image-list li:active {
+      cursor: grabbing;
+    }
+    #image-list li.drag-over {
+      outline: 2px dashed #0066cc;
+      outline-offset: 2px;
+      background: #eef6ff;
+    }
     .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
     .status { min-height: 1.2rem; margin-top: 0.5rem; color: #114411; }
     .error { color: #8b0000; }
     input[type="number"] { width: 8rem; }
-    .thumb { width: 100px; height: 70px; object-fit: cover; border-radius: 4px; border: 1px solid #ccc; background: #111; flex: none; }
-    .image-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .spacer { margin-left: auto; }
-    .danger { border: 1px solid #a11; color: #a11; background: #fff; border-radius: 4px; padding: 0.25rem 0.45rem; cursor: pointer; }
+    .thumb {
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      object-fit: cover;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      background: #111;
+      display: block;
+      pointer-events: none;
+    }
+    .danger {
+      border: 1px solid #c33;
+      color: #c33;
+      background: #fff;
+      border-radius: 4px;
+      padding: 0.35rem 0.5rem;
+      cursor: pointer;
+      width: 100%;
+      margin-top: 0.5rem;
+      font-size: 0.85rem;
+      font-weight: 500;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .danger:hover {
+      background: #c33;
+      color: #fff;
+    }
   </style>
 </head>
 <body>
@@ -462,13 +514,6 @@ const ADMIN_HTML: &str = r#"<!doctype html>
       thumb.alt = image.file_name;
       thumb.loading = 'lazy';
 
-      const meta = document.createElement('div');
-      meta.className = 'image-meta';
-      meta.textContent = `${image.sort_index}. ${image.file_name} (${image.created_at})`;
-
-      const spacer = document.createElement('div');
-      spacer.className = 'spacer';
-
       const removeButton = document.createElement('button');
       removeButton.type = 'button';
       removeButton.className = 'danger';
@@ -476,7 +521,7 @@ const ADMIN_HTML: &str = r#"<!doctype html>
       removeButton.addEventListener('click', async (event) => {
         event.preventDefault();
         event.stopPropagation();
-        if (!confirm(`Remove image "${image.file_name}"?`)) return;
+        if (!confirm('Remove image?')) return;
         setStatus(orderStatus, '');
         try {
           await fetchJson(`/admin/api/images/${image.id}`, { method: 'DELETE' });
@@ -488,21 +533,38 @@ const ADMIN_HTML: &str = r#"<!doctype html>
       });
 
       item.appendChild(thumb);
-      item.appendChild(meta);
-      item.appendChild(spacer);
       item.appendChild(removeButton);
 
-      item.addEventListener('dragstart', () => {
+      item.addEventListener('dragstart', (e) => {
         dragSource = item;
-        item.style.opacity = '0.6';
+        item.style.opacity = '0.5';
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', String(image.id));
+        }
       });
       item.addEventListener('dragend', () => {
         dragSource = null;
         item.style.opacity = '1';
+        document.querySelectorAll('#image-list li').forEach((el) => el.classList.remove('drag-over'));
       });
-      item.addEventListener('dragover', (event) => event.preventDefault());
+      item.addEventListener('dragover', (event) => {
+        event.preventDefault();
+        if (event.dataTransfer) {
+          event.dataTransfer.dropEffect = 'move';
+        }
+      });
+      item.addEventListener('dragenter', () => {
+        if (dragSource && dragSource !== item) {
+          item.classList.add('drag-over');
+        }
+      });
+      item.addEventListener('dragleave', () => {
+        item.classList.remove('drag-over');
+      });
       item.addEventListener('drop', (event) => {
         event.preventDefault();
+        item.classList.remove('drag-over');
         if (!dragSource || dragSource === item) return;
         const listItems = [...imageList.querySelectorAll('li')];
         const sourceIndex = listItems.indexOf(dragSource);

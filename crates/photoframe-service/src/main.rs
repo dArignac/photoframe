@@ -305,6 +305,10 @@ mod tests {
                 .unwrap()
                 .contains("text/html")
         );
+        let admin_body = response.into_body().collect().await.unwrap().to_bytes();
+        let admin_html = String::from_utf8(admin_body.to_vec()).unwrap();
+        assert!(admin_html.contains("repeat(5, 1fr)"));
+        assert!(!admin_html.contains("image-meta"));
 
         let response = app
             .oneshot(Request::builder().uri("/frame").body(Body::empty()).unwrap())
