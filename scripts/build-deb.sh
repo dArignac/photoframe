@@ -16,8 +16,13 @@ for cmd in cargo dpkg dpkg-deb; do
 done
 
 if [[ -n "$TARGET" ]]; then
-  cargo build --release -p photoframe-service --target "$TARGET"
-  BIN_PATH="$ROOT_DIR/target/$TARGET/release/photoframe-service"
+  REAL_TARGET="${TARGET%%.*}"
+  if command -v cargo-zigbuild >/dev/null 2>&1; then
+    cargo zigbuild --release -p photoframe-service --target "$TARGET"
+  else
+    cargo build --release -p photoframe-service --target "$TARGET"
+  fi
+  BIN_PATH="$ROOT_DIR/target/$REAL_TARGET/release/photoframe-service"
 else
   cargo build --release -p photoframe-service
   BIN_PATH="$ROOT_DIR/target/release/photoframe-service"

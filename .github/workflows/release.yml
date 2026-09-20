@@ -62,17 +62,13 @@ jobs:
           cargo test --verbose
           cargo clippy --all-targets -- -D warnings
 
-      - name: Install ARMv7 cross-compilation toolchain
+      - name: Install Zig and cargo-zigbuild
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+          pip install --no-cache-dir cargo-zigbuild ziglang
 
       - name: Build ARMv7 Debian package
         env:
-          TARGET: armv7-unknown-linux-gnueabihf
-          CC_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-gcc
-          AR_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-ar
-          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+          TARGET: armv7-unknown-linux-gnueabihf.2.31
         run: |
           ./scripts/build-deb.sh "${{ steps.validate.outputs.pkg_version }}"
 
