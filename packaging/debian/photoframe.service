@@ -4,9 +4,16 @@ After=network.target
 
 [Service]
 Type=simple
+User=photoframe
+Group=photoframe
 ExecStart=/usr/bin/photoframe-service --config /etc/photoframe/config.yaml
 Restart=always
 RestartSec=5
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/photoframe /etc/photoframe
 
 [Install]
 WantedBy=multi-user.target

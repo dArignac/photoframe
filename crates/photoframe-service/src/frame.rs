@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use axum::{
     Json,
     extract::State,
@@ -41,10 +41,17 @@ pub(crate) async fn frame_state(
         night_mode_start: state.config.night_mode_start.clone(),
         night_mode_end: state.config.night_mode_end.clone(),
     };
-    let settings = db::load_admin_settings(&state.config.database_path, &settings_defaults)
-        .map_err(ApiError::internal)?;
-    let images = db::list_images(&state.config.database_path)
-        .map_err(ApiError::internal)?
+    let db_path = state.config.database_path.clone();
+    let (settings, raw_images) = tokio::task::spawn_blocking(move || {
+        let settings = db::load_admin_settings(&db_path, &settings_defaults)?;
+        let images = db::list_images(&db_path)?;
+        Ok::<_, anyhow::Error>((settings, images))
+    })
+    .await
+    .map_err(|err| ApiError::internal(anyhow::anyhow!("spawn_blocking error: {err}")))?
+    .map_err(ApiError::internal)?;
+
+    let images = raw_images
         .into_iter()
         .map(|image| FrameImage {
             id: image.id,
@@ -64,34 +71,20 @@ pub(crate) async fn frame_state(
 }
 
 fn is_night_mode_active(settings: &AdminSettings) -> Result<bool> {
-    let start = parse_hh_mm_time("night_mode_start", &settings.night_mode_start)?;
-    let end = parse_hh_mm_time("night_mode_end", &settings.night_mode_end)?;
+    let start = crate::config::parse_hh_mm("night_mode_start", &settings.night_mode_start)?;
+    let end = crate::config::parse_hh_mm("night_mode_end", &settings.night_mode_end)?;
     let now = Local::now().time();
-
-    if start < end {
-        Ok(now >= start && now < end)
-    } else if start > end {
-        Ok(now >= start || now < end)
-    } else {
-        Ok(false)
-    }
+    Ok(is_time_in_window(now, start, end))
 }
 
-fn parse_hh_mm_time(name: &str, value: &str) -> Result<NaiveTime> {
-    let parts: Vec<&str> = value.split(':').collect();
-    if parts.len() != 2 {
-        bail!("{name} must be in HH:MM format");
+pub(crate) fn is_time_in_window(now: NaiveTime, start: NaiveTime, end: NaiveTime) -> bool {
+    if start < end {
+        now >= start && now < end
+    } else if start > end {
+        now >= start || now < end
+    } else {
+        false
     }
-
-    let hour: u32 = parts[0]
-        .parse()
-        .with_context(|| format!("{name} has invalid hour component"))?;
-    let minute: u32 = parts[1]
-        .parse()
-        .with_context(|| format!("{name} has invalid minute component"))?;
-
-    NaiveTime::from_hms_opt(hour, minute, 0)
-        .with_context(|| format!("{name} must be a valid 24-hour time"))
 }
 
 const FRAME_HTML: &str = r#"<!doctype html>
@@ -164,7 +157,7 @@ const FRAME_HTML: &str = r#"<!doctype html>
 
       if (currentState.night_mode_active) {
         frameImage.style.display = 'none';
-        setOverlay('Night mode active');
+        setOverlay('');
         return;
       }
 
@@ -205,8 +198,8 @@ const FRAME_HTML: &str = r#"<!doctype html>
       clearPollTimer();
       const configuredSeconds = (currentState && currentState.frame_poll_interval_seconds)
         ? currentState.frame_poll_interval_seconds
-        : 60;
-      const seconds = Math.min(60, Math.max(1, configuredSeconds));
+        : 15;
+      const seconds = Math.max(1, configuredSeconds);
       pollTimer = setInterval(() => {
         refreshState().catch((error) => setOverlay(`Frame refresh error: ${error.message}`));
       }, seconds * 1000);
@@ -229,11 +222,26 @@ const FRAME_HTML: &str = r#"<!doctype html>
 
     async function refreshState() {
       const nextState = await fetchState();
-      keepCurrentImageIfPossible(currentState, nextState);
+      const previousState = currentState;
+      keepCurrentImageIfPossible(previousState, nextState);
       currentState = nextState;
-      renderCurrentImage();
-      restartRotationTimer();
-      restartPollTimer();
+
+      const nightChanged = !previousState || previousState.night_mode_active !== nextState.night_mode_active;
+      const intervalChanged = !previousState || previousState.slideshow_interval_seconds !== nextState.slideshow_interval_seconds;
+      const imagesChanged = !previousState || JSON.stringify(previousState.images) !== JSON.stringify(nextState.images);
+      const pollChanged = !previousState || previousState.frame_poll_interval_seconds !== nextState.frame_poll_interval_seconds;
+
+      if (nightChanged || imagesChanged || !previousState) {
+        renderCurrentImage();
+      }
+
+      if (nightChanged || intervalChanged || imagesChanged || !rotationTimer) {
+        restartRotationTimer();
+      }
+
+      if (pollChanged || !pollTimer) {
+        restartPollTimer();
+      }
     }
 
     refreshState().catch((error) => setOverlay(`Frame refresh error: ${error.message}`));
@@ -241,3 +249,41 @@ const FRAME_HTML: &str = r#"<!doctype html>
 </body>
 </html>
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_time_in_window_daytime() {
+        let start = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
+        let end = NaiveTime::from_hms_opt(17, 0, 0).unwrap();
+
+        assert!(!is_time_in_window(NaiveTime::from_hms_opt(8, 59, 59).unwrap(), start, end));
+        assert!(is_time_in_window(NaiveTime::from_hms_opt(9, 0, 0).unwrap(), start, end));
+        assert!(is_time_in_window(NaiveTime::from_hms_opt(12, 0, 0).unwrap(), start, end));
+        assert!(is_time_in_window(NaiveTime::from_hms_opt(16, 59, 59).unwrap(), start, end));
+        assert!(!is_time_in_window(NaiveTime::from_hms_opt(17, 0, 0).unwrap(), start, end));
+        assert!(!is_time_in_window(NaiveTime::from_hms_opt(22, 0, 0).unwrap(), start, end));
+    }
+
+    #[test]
+    fn test_is_time_in_window_cross_midnight() {
+        let start = NaiveTime::from_hms_opt(20, 0, 0).unwrap();
+        let end = NaiveTime::from_hms_opt(6, 0, 0).unwrap();
+
+        assert!(is_time_in_window(NaiveTime::from_hms_opt(20, 0, 0).unwrap(), start, end));
+        assert!(is_time_in_window(NaiveTime::from_hms_opt(23, 30, 0).unwrap(), start, end));
+        assert!(is_time_in_window(NaiveTime::from_hms_opt(0, 0, 0).unwrap(), start, end));
+        assert!(is_time_in_window(NaiveTime::from_hms_opt(5, 59, 59).unwrap(), start, end));
+        assert!(!is_time_in_window(NaiveTime::from_hms_opt(6, 0, 0).unwrap(), start, end));
+        assert!(!is_time_in_window(NaiveTime::from_hms_opt(12, 0, 0).unwrap(), start, end));
+        assert!(!is_time_in_window(NaiveTime::from_hms_opt(19, 59, 59).unwrap(), start, end));
+    }
+
+    #[test]
+    fn test_is_time_in_window_equal_start_end() {
+        let time = NaiveTime::from_hms_opt(8, 0, 0).unwrap();
+        assert!(!is_time_in_window(time, time, time));
+    }
+}

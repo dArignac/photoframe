@@ -9,7 +9,6 @@ use clap::Parser;
 use serde::Deserialize;
 
 const DEFAULT_CONFIG_PATH: &str = "/etc/photoframe/config.yaml";
-const ENV_PREFIX: &str = "PHOTOFRAME_";
 
 #[derive(Debug, Clone)]
 pub enum DisplayFitMode {
@@ -92,15 +91,20 @@ struct FileConfig {
 impl AppConfig {
     pub fn load() -> Result<Self> {
         let cli = Cli::parse();
-        let config_path = cli
-            .config
-            .clone()
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
-
         let mut config = Self::default();
-        if config_path.exists() {
-            apply_file(&mut config, &config_path)?;
+
+        if let Some(ref config_path) = cli.config {
+            if !config_path.exists() {
+                bail!("configuration file '{}' not found", config_path.display());
+            }
+            apply_file(&mut config, config_path)?;
+        } else {
+            let default_path = Path::new(DEFAULT_CONFIG_PATH);
+            if default_path.exists() {
+                apply_file(&mut config, default_path)?;
+            }
         }
+
         apply_env(&mut config)?;
         apply_cli(&mut config, &cli);
         validate(&config)?;
@@ -147,39 +151,39 @@ fn apply_file(config: &mut AppConfig, path: &Path) -> Result<()> {
 }
 
 fn apply_env(config: &mut AppConfig) -> Result<()> {
-    if let Ok(v) = env::var(format!("{ENV_PREFIX}BIND_ADDRESS")) {
+    if let Ok(v) = env::var("PHOTOFRAME_BIND_ADDRESS") {
         config.bind_address = v
             .parse()
-            .with_context(|| format!("invalid {ENV_PREFIX}BIND_ADDRESS"))?;
+            .with_context(|| "invalid PHOTOFRAME_BIND_ADDRESS")?;
     }
-    if let Ok(v) = env::var(format!("{ENV_PREFIX}PORT")) {
+    if let Ok(v) = env::var("PHOTOFRAME_PORT") {
         config.port = v
             .parse()
-            .with_context(|| format!("invalid {ENV_PREFIX}PORT"))?;
+            .with_context(|| "invalid PHOTOFRAME_PORT")?;
     }
-    if let Ok(v) = env::var(format!("{ENV_PREFIX}IMAGE_DIR")) {
+    if let Ok(v) = env::var("PHOTOFRAME_IMAGE_DIR") {
         config.image_dir = PathBuf::from(v);
     }
-    if let Ok(v) = env::var(format!("{ENV_PREFIX}DB_PATH")) {
+    if let Ok(v) = env::var("PHOTOFRAME_DB_PATH") {
         config.database_path = PathBuf::from(v);
     }
-    if let Ok(v) = env::var(format!("{ENV_PREFIX}SLIDESHOW_INTERVAL_SECONDS")) {
+    if let Ok(v) = env::var("PHOTOFRAME_SLIDESHOW_INTERVAL_SECONDS") {
         config.slideshow_interval_seconds = v
             .parse()
-            .with_context(|| format!("invalid {ENV_PREFIX}SLIDESHOW_INTERVAL_SECONDS"))?;
+            .with_context(|| "invalid PHOTOFRAME_SLIDESHOW_INTERVAL_SECONDS")?;
     }
-    if let Ok(v) = env::var(format!("{ENV_PREFIX}NIGHT_MODE_START")) {
+    if let Ok(v) = env::var("PHOTOFRAME_NIGHT_MODE_START") {
         config.night_mode_start = v;
     }
-    if let Ok(v) = env::var(format!("{ENV_PREFIX}NIGHT_MODE_END")) {
+    if let Ok(v) = env::var("PHOTOFRAME_NIGHT_MODE_END") {
         config.night_mode_end = v;
     }
-    if let Ok(v) = env::var(format!("{ENV_PREFIX}FRAME_POLL_INTERVAL_SECONDS")) {
+    if let Ok(v) = env::var("PHOTOFRAME_FRAME_POLL_INTERVAL_SECONDS") {
         config.frame_poll_interval_seconds = v
             .parse()
-            .with_context(|| format!("invalid {ENV_PREFIX}FRAME_POLL_INTERVAL_SECONDS"))?;
+            .with_context(|| "invalid PHOTOFRAME_FRAME_POLL_INTERVAL_SECONDS")?;
     }
-    if let Ok(v) = env::var(format!("{ENV_PREFIX}DISPLAY_FIT_MODE")) {
+    if let Ok(v) = env::var("PHOTOFRAME_DISPLAY_FIT_MODE") {
         config.display_fit_mode = DisplayFitMode::parse(&v)?;
     }
 
@@ -211,22 +215,97 @@ fn validate(config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_hh_mm(field: &str, value: &str) -> Result<()> {
+pub(crate) fn parse_hh_mm(field: &str, value: &str) -> Result<chrono::NaiveTime> {
     let parts: Vec<&str> = value.split(':').collect();
-    if parts.len() != 2 {
+    if parts.len() != 2
+        || parts[0].len() != 2
+        || parts[1].len() != 2
+        || !parts[0].chars().all(|c| c.is_ascii_digit())
+        || !parts[1].chars().all(|c| c.is_ascii_digit())
+    {
         bail!("{field} must be in HH:MM format");
     }
 
-    let hours: u8 = parts[0]
+    let hours: u32 = parts[0]
         .parse()
         .with_context(|| format!("{field} has invalid hour component"))?;
-    let minutes: u8 = parts[1]
+    let minutes: u32 = parts[1]
         .parse()
         .with_context(|| format!("{field} has invalid minute component"))?;
 
-    if hours > 23 || minutes > 59 {
-        bail!("{field} must be a valid 24-hour time");
+    chrono::NaiveTime::from_hms_opt(hours, minutes, 0)
+        .with_context(|| format!("{field} must be a valid 24-hour time"))
+}
+
+pub(crate) fn validate_hh_mm(field: &str, value: &str) -> Result<()> {
+    parse_hh_mm(field, value).map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_hh_mm_valid() {
+        let t1 = parse_hh_mm("test", "00:00").unwrap();
+        assert_eq!(t1, chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+
+        let t2 = parse_hh_mm("test", "23:59").unwrap();
+        assert_eq!(t2, chrono::NaiveTime::from_hms_opt(23, 59, 0).unwrap());
+
+        let t3 = parse_hh_mm("test", "12:30").unwrap();
+        assert_eq!(t3, chrono::NaiveTime::from_hms_opt(12, 30, 0).unwrap());
     }
 
-    Ok(())
+    #[test]
+    fn test_parse_hh_mm_invalid() {
+        assert!(parse_hh_mm("test", "24:00").is_err());
+        assert!(parse_hh_mm("test", "12:60").is_err());
+        assert!(parse_hh_mm("test", "8:30").is_err()); // Not 2-digit hour
+        assert!(parse_hh_mm("test", "08:3").is_err());  // Not 2-digit minute
+        assert!(parse_hh_mm("test", "+8:30").is_err());
+        assert!(parse_hh_mm("test", "invalid").is_err());
+        assert!(parse_hh_mm("test", "12:34:56").is_err());
+    }
+
+    #[test]
+    fn test_display_fit_mode_parse() {
+        assert!(matches!(DisplayFitMode::parse("contain").unwrap(), DisplayFitMode::Contain));
+        assert!(matches!(DisplayFitMode::parse("COVER").unwrap(), DisplayFitMode::Cover));
+        assert!(matches!(DisplayFitMode::parse("  contain ").unwrap(), DisplayFitMode::Contain));
+        assert!(DisplayFitMode::parse("stretch").is_err());
+    }
+
+    #[test]
+    fn test_default_config_validation() {
+        let config = AppConfig::default();
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_config_validation_failures() {
+        let config_bad_port = AppConfig {
+            port: 0,
+            ..Default::default()
+        };
+        assert!(validate(&config_bad_port).is_err());
+
+        let config_bad_interval = AppConfig {
+            slideshow_interval_seconds: 0,
+            ..Default::default()
+        };
+        assert!(validate(&config_bad_interval).is_err());
+
+        let config_bad_poll = AppConfig {
+            frame_poll_interval_seconds: 0,
+            ..Default::default()
+        };
+        assert!(validate(&config_bad_poll).is_err());
+
+        let config_bad_night = AppConfig {
+            night_mode_start: "bad".to_string(),
+            ..Default::default()
+        };
+        assert!(validate(&config_bad_night).is_err());
+    }
 }

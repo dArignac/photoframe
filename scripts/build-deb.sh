@@ -27,7 +27,17 @@ if [[ ! -x "$BIN_PATH" ]]; then
   exit 1
 fi
 
-DEB_ARCH="$(dpkg --print-architecture)"
+if [[ -n "${TARGET:-}" ]]; then
+  case "$TARGET" in
+    aarch64-*) DEB_ARCH="${DEB_ARCH:-arm64}" ;;
+    armv7*|armhf*) DEB_ARCH="${DEB_ARCH:-armhf}" ;;
+    x86_64-*) DEB_ARCH="${DEB_ARCH:-amd64}" ;;
+    i686-*) DEB_ARCH="${DEB_ARCH:-i386}" ;;
+    *) DEB_ARCH="${DEB_ARCH:-$(dpkg --print-architecture)}" ;;
+  esac
+else
+  DEB_ARCH="${DEB_ARCH:-$(dpkg --print-architecture)}"
+fi
 STAGE_ROOT="$ROOT_DIR/target/package/${PKG_NAME}_${VERSION}_${DEB_ARCH}"
 rm -rf "$STAGE_ROOT"
 

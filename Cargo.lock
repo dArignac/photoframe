@@ -665,10 +665,12 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "http-body-util",
  "rusqlite",
  "serde",
  "serde_yaml",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]

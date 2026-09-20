@@ -48,8 +48,12 @@ pub fn initialize(database_path: &Path) -> Result<()> {
 
     let mut conn = Connection::open(database_path)
         .with_context(|| format!("failed to open sqlite db at {}", database_path.display()))?;
-    conn.execute_batch("PRAGMA foreign_keys = ON;")
-        .context("failed to enable sqlite foreign_keys")?;
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA busy_timeout = 5000;
+         PRAGMA foreign_keys = ON;",
+    )
+    .context("failed to configure sqlite database pragmas")?;
 
     run_migrations(&mut conn)?;
 
@@ -245,8 +249,12 @@ pub fn save_admin_settings(database_path: &Path, settings: &AdminSettings) -> Re
 fn open_connection(database_path: &Path) -> Result<Connection> {
     let conn = Connection::open(database_path)
         .with_context(|| format!("failed to open sqlite db at {}", database_path.display()))?;
-    conn.execute_batch("PRAGMA foreign_keys = ON;")
-        .context("failed to enable sqlite foreign_keys")?;
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA busy_timeout = 5000;
+         PRAGMA foreign_keys = ON;",
+    )
+    .context("failed to configure sqlite connection pragmas")?;
     Ok(conn)
 }
 
@@ -274,7 +282,7 @@ fn upsert_setting(tx: &Transaction<'_>, key: &str, value: &str) -> Result<()> {
 
 fn ensure_parent_directory(database_path: &Path) -> Result<()> {
     match database_path.parent() {
-        Some(parent) => {
+        Some(parent) if !parent.as_os_str().is_empty() => {
             fs::create_dir_all(parent).with_context(|| {
                 format!(
                     "failed to create sqlite parent directory {}",
@@ -283,10 +291,7 @@ fn ensure_parent_directory(database_path: &Path) -> Result<()> {
             })?;
             Ok(())
         }
-        None => bail!(
-            "database path '{}' has no parent directory",
-            database_path.display()
-        ),
+        _ => Ok(()),
     }
 }
 
@@ -326,4 +331,94 @@ fn current_version(tx: &Transaction<'_>) -> Result<i64> {
         .context("failed to query migration version")?;
 
     Ok(current_version)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_db_path() -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("photoframe-test-{nanos}.sqlite"))
+    }
+
+    #[test]
+    fn test_db_lifecycle_and_operations() {
+        let db_path = temp_db_path();
+        initialize(&db_path).unwrap();
+
+        // 1. Initial image list should be empty
+        let images = list_images(&db_path).unwrap();
+        assert!(images.is_empty());
+
+        // 2. Insert images
+        let img1 = insert_image(&db_path, "test1.jpg").unwrap();
+        assert_eq!(img1.sort_index, 0);
+        let img2 = insert_image(&db_path, "test2.jpg").unwrap();
+        assert_eq!(img2.sort_index, 1);
+        let img3 = insert_image(&db_path, "test3.jpg").unwrap();
+        assert_eq!(img3.sort_index, 2);
+
+        let list = list_images(&db_path).unwrap();
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0].file_name, "test1.jpg");
+        assert_eq!(list[1].file_name, "test2.jpg");
+        assert_eq!(list[2].file_name, "test3.jpg");
+
+        // 3. Reorder images: put img3 first, then img1, then img2
+        reorder_images(&db_path, &[img3.id, img1.id, img2.id]).unwrap();
+        let reordered = list_images(&db_path).unwrap();
+        assert_eq!(reordered[0].id, img3.id);
+        assert_eq!(reordered[0].sort_index, 0);
+        assert_eq!(reordered[1].id, img1.id);
+        assert_eq!(reordered[1].sort_index, 1);
+        assert_eq!(reordered[2].id, img2.id);
+        assert_eq!(reordered[2].sort_index, 2);
+
+        // 4. Invalid reorder payload (missing id or duplicate)
+        assert!(reorder_images(&db_path, &[img3.id, img1.id]).is_err());
+        assert!(reorder_images(&db_path, &[img3.id, img1.id, img1.id]).is_err());
+
+        // 5. Delete middle image (img1, sort_index 1) and verify compacting
+        let deleted_file = delete_image(&db_path, img1.id).unwrap();
+        assert_eq!(deleted_file, Some("test1.jpg".to_string()));
+
+        let after_delete = list_images(&db_path).unwrap();
+        assert_eq!(after_delete.len(), 2);
+        assert_eq!(after_delete[0].id, img3.id);
+        assert_eq!(after_delete[0].sort_index, 0);
+        assert_eq!(after_delete[1].id, img2.id);
+        assert_eq!(after_delete[1].sort_index, 1); // compacted from 2 to 1!
+
+        // 6. Delete non-existent image
+        let non_existent = delete_image(&db_path, 9999).unwrap();
+        assert_eq!(non_existent, None);
+
+        // 7. Admin settings load defaults and update
+        let defaults = AdminSettings {
+            slideshow_interval_seconds: 30,
+            night_mode_start: "20:00".to_string(),
+            night_mode_end: "06:00".to_string(),
+        };
+        let loaded = load_admin_settings(&db_path, &defaults).unwrap();
+        assert_eq!(loaded.slideshow_interval_seconds, 30);
+        assert_eq!(loaded.night_mode_start, "20:00");
+
+        let updated = AdminSettings {
+            slideshow_interval_seconds: 60,
+            night_mode_start: "22:00".to_string(),
+            night_mode_end: "07:30".to_string(),
+        };
+        save_admin_settings(&db_path, &updated).unwrap();
+        let reloaded = load_admin_settings(&db_path, &defaults).unwrap();
+        assert_eq!(reloaded.slideshow_interval_seconds, 60);
+        assert_eq!(reloaded.night_mode_start, "22:00");
+        assert_eq!(reloaded.night_mode_end, "07:30");
+
+        let _ = std::fs::remove_file(&db_path);
+    }
 }

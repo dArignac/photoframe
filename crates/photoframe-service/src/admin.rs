@@ -101,13 +101,24 @@ pub(crate) async fn image_thumbnail(
         }
     };
 
-    Ok(([(header::CONTENT_TYPE, mime_type_for_filename(&file_name))], bytes).into_response())
+    Ok((
+        [
+            (header::CONTENT_TYPE, mime_type_for_filename(&file_name)),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 pub(crate) async fn list_images(
     State(state): State<AppState>,
 ) -> ApiResult<Json<Vec<StoredImage>>> {
-    let images = db::list_images(&state.config.database_path).map_err(ApiError::internal)?;
+    let db_path = state.config.database_path.clone();
+    let images = tokio::task::spawn_blocking(move || db::list_images(&db_path))
+        .await
+        .map_err(|err| ApiError::internal(anyhow!("spawn_blocking error: {err}")))?
+        .map_err(ApiError::internal)?;
     Ok(Json(images))
 }
 
@@ -115,9 +126,13 @@ pub(crate) async fn delete_image(
     AxumPath(image_id): AxumPath<i64>,
     State(state): State<AppState>,
 ) -> ApiResult<StatusCode> {
-    let Some(file_name) =
-        db::delete_image(&state.config.database_path, image_id).map_err(ApiError::internal)?
-    else {
+    let db_path = state.config.database_path.clone();
+    let file_name_opt = tokio::task::spawn_blocking(move || db::delete_image(&db_path, image_id))
+        .await
+        .map_err(|err| ApiError::internal(anyhow!("spawn_blocking error: {err}")))?
+        .map_err(ApiError::internal)?;
+
+    let Some(file_name) = file_name_opt else {
         return Err(ApiError {
             status: StatusCode::NOT_FOUND,
             message: "image not found".to_string(),
@@ -167,6 +182,13 @@ pub(crate) async fn upload_image(
             .file_name()
             .map(ToString::to_string)
             .unwrap_or_else(|| "upload.bin".to_string());
+
+        if !is_allowed_image_extension(&original_name) {
+            return Err(ApiError::bad_request(format!(
+                "file '{original_name}' has an unsupported extension; allowed: jpg, jpeg, png, gif, webp, bmp"
+            )));
+        }
+
         let stored_name = make_stored_file_name(&original_name).map_err(ApiError::internal)?;
 
         let bytes = field
@@ -183,8 +205,23 @@ pub(crate) async fn upload_image(
             .with_context(|| format!("failed to write uploaded file {}", destination.display()))
             .map_err(ApiError::internal)?;
 
-        let inserted =
-            db::insert_image(&state.config.database_path, &stored_name).map_err(ApiError::internal)?;
+        let db_path = state.config.database_path.clone();
+        let stored_clone = stored_name.clone();
+        let inserted = match tokio::task::spawn_blocking(move || {
+            db::insert_image(&db_path, &stored_clone)
+        })
+        .await
+        {
+            Ok(Ok(img)) => img,
+            Ok(Err(err)) => {
+                let _ = fs::remove_file(&destination).await;
+                return Err(ApiError::internal(err));
+            }
+            Err(err) => {
+                let _ = fs::remove_file(&destination).await;
+                return Err(ApiError::internal(anyhow!("spawn_blocking error: {err}")));
+            }
+        };
         uploaded.push(inserted);
     }
 
@@ -201,14 +238,18 @@ pub(crate) async fn reorder_images(
     State(state): State<AppState>,
     Json(payload): Json<ReorderPayload>,
 ) -> ApiResult<StatusCode> {
-    db::reorder_images(&state.config.database_path, &payload.ordered_ids).map_err(|err| {
-        let message = err.to_string();
-        if message.contains("reorder payload must contain each image id exactly once") {
-            ApiError::bad_request(message)
-        } else {
-            ApiError::internal(err)
-        }
-    })?;
+    let db_path = state.config.database_path.clone();
+    tokio::task::spawn_blocking(move || db::reorder_images(&db_path, &payload.ordered_ids))
+        .await
+        .map_err(|err| ApiError::internal(anyhow!("spawn_blocking error: {err}")))?
+        .map_err(|err| {
+            let message = err.to_string();
+            if message.contains("reorder payload must contain each image id exactly once") {
+                ApiError::bad_request(message)
+            } else {
+                ApiError::internal(err)
+            }
+        })?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -221,8 +262,11 @@ pub(crate) async fn get_settings(
         night_mode_start: state.config.night_mode_start.clone(),
         night_mode_end: state.config.night_mode_end.clone(),
     };
-    let settings =
-        db::load_admin_settings(&state.config.database_path, &defaults).map_err(ApiError::internal)?;
+    let db_path = state.config.database_path.clone();
+    let settings = tokio::task::spawn_blocking(move || db::load_admin_settings(&db_path, &defaults))
+        .await
+        .map_err(|err| ApiError::internal(anyhow!("spawn_blocking error: {err}")))?
+        .map_err(ApiError::internal)?;
     Ok(Json(AdminSettingsPayload {
         slideshow_interval_seconds: settings.slideshow_interval_seconds,
         night_mode_start: settings.night_mode_start,
@@ -236,15 +280,16 @@ pub(crate) async fn update_settings(
 ) -> ApiResult<StatusCode> {
     validate_settings_payload(&payload).map_err(|err| ApiError::bad_request(err.to_string()))?;
 
-    db::save_admin_settings(
-        &state.config.database_path,
-        &AdminSettings {
-            slideshow_interval_seconds: payload.slideshow_interval_seconds,
-            night_mode_start: payload.night_mode_start,
-            night_mode_end: payload.night_mode_end,
-        },
-    )
-    .map_err(ApiError::internal)?;
+    let db_path = state.config.database_path.clone();
+    let to_save = AdminSettings {
+        slideshow_interval_seconds: payload.slideshow_interval_seconds,
+        night_mode_start: payload.night_mode_start,
+        night_mode_end: payload.night_mode_end,
+    };
+    tokio::task::spawn_blocking(move || db::save_admin_settings(&db_path, &to_save))
+        .await
+        .map_err(|err| ApiError::internal(anyhow!("spawn_blocking error: {err}")))?
+        .map_err(ApiError::internal)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -284,6 +329,17 @@ fn make_stored_file_name(original_name: &str) -> Result<String> {
     Ok(format!("{timestamp}-{sanitized}"))
 }
 
+pub(crate) fn is_allowed_image_extension(file_name: &str) -> bool {
+    matches!(
+        Path::new(file_name)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .as_deref(),
+        Some("jpg") | Some("jpeg") | Some("png") | Some("gif") | Some("webp") | Some("bmp")
+    )
+}
+
 fn is_safe_stored_file_name(file_name: &str) -> bool {
     Path::new(file_name)
         .file_name()
@@ -303,7 +359,6 @@ fn mime_type_for_filename(file_name: &str) -> &'static str {
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
         Some("bmp") => "image/bmp",
-        Some("svg") => "image/svg+xml",
         _ => "application/octet-stream",
     }
 }
@@ -542,3 +597,43 @@ const ADMIN_HTML: &str = r#"<!doctype html>
 </body>
 </html>
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_allowed_image_extension() {
+        assert!(is_allowed_image_extension("photo.jpg"));
+        assert!(is_allowed_image_extension("photo.JPEG"));
+        assert!(is_allowed_image_extension("photo.png"));
+        assert!(is_allowed_image_extension("photo.gif"));
+        assert!(is_allowed_image_extension("photo.webp"));
+        assert!(is_allowed_image_extension("photo.bmp"));
+
+        assert!(!is_allowed_image_extension("vector.svg"));
+        assert!(!is_allowed_image_extension("page.html"));
+        assert!(!is_allowed_image_extension("binary.exe"));
+        assert!(!is_allowed_image_extension("script.sh"));
+        assert!(!is_allowed_image_extension("no_extension"));
+    }
+
+    #[test]
+    fn test_is_safe_stored_file_name() {
+        assert!(is_safe_stored_file_name("12345-photo.jpg"));
+        assert!(!is_safe_stored_file_name("../etc/passwd"));
+        assert!(!is_safe_stored_file_name("foo/bar.jpg"));
+        assert!(!is_safe_stored_file_name(".."));
+        assert!(!is_safe_stored_file_name("."));
+        assert!(!is_safe_stored_file_name(""));
+    }
+
+    #[test]
+    fn test_make_stored_file_name() {
+        let stored = make_stored_file_name("My Photo (1).jpg").unwrap();
+        assert!(stored.ends_with("-My_Photo__1_.jpg"));
+        assert!(!stored.contains(' '));
+        assert!(!stored.contains('('));
+        assert!(!stored.contains(')'));
+    }
+}
