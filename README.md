@@ -4,14 +4,16 @@ Bootstrapped Rust service for a Raspberry Pi photo frame application.
 
 ## Run
 
+Copy the `config.example.yaml` to `config.yaml` and adjust the values if necessary.
+
 ```bash
-cargo run -p photoframe-service -- --config ./config.example.yaml
+cargo run -p photoframe-service -- --config ./config.yaml
 ```
 
 Logging defaults to `info` if `RUST_LOG` is unset. To increase verbosity, for example:
 
 ```bash
-RUST_LOG=debug cargo run -p photoframe-service -- --config ./config.example.yaml
+RUST_LOG=debug cargo run -p photoframe-service -- --config ./config.yaml
 ```
 
 The service starts with:
@@ -73,6 +75,7 @@ The package installs:
 
 - `/usr/bin/photoframe-service`
 - `/etc/photoframe/config.yaml` (conffile)
+- `/etc/photoframe/images/`
 - `/lib/systemd/system/photoframe.service`
 
-Package maintainer scripts will enable and (re)start `photoframe.service` on install/configure, and stop/disable it on remove.
+Package maintainer scripts will enable and (re)start `photoframe.service` on install/configure, stop/disable it on remove, and clean up the images folder on uninstall.

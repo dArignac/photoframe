@@ -1,3 +1,4 @@
 target/
 images/
 photoframe.sqlite
+config.yaml

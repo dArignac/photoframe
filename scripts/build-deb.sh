@@ -46,8 +46,7 @@ mkdir -p \
   "$STAGE_ROOT/DEBIAN" \
   "$STAGE_ROOT/usr/bin" \
   "$STAGE_ROOT/lib/systemd/system" \
-  "$STAGE_ROOT/etc/photoframe" \
-  "$STAGE_ROOT/var/lib/photoframe/images"
+  "$STAGE_ROOT/etc/photoframe/images"
 
 sed -e "s/__VERSION__/${VERSION}/g" \
     -e "s/__ARCH__/${DEB_ARCH}/g" \
@@ -55,14 +54,16 @@ sed -e "s/__VERSION__/${VERSION}/g" \
 
 cp "$ROOT_DIR/packaging/debian/postinst" "$STAGE_ROOT/DEBIAN/postinst"
 cp "$ROOT_DIR/packaging/debian/prerm" "$STAGE_ROOT/DEBIAN/prerm"
+cp "$ROOT_DIR/packaging/debian/postrm" "$STAGE_ROOT/DEBIAN/postrm"
 cp "$ROOT_DIR/packaging/debian/conffiles" "$STAGE_ROOT/DEBIAN/conffiles"
-chmod 0755 "$STAGE_ROOT/DEBIAN/postinst" "$STAGE_ROOT/DEBIAN/prerm"
+chmod 0755 "$STAGE_ROOT/DEBIAN/postinst" "$STAGE_ROOT/DEBIAN/prerm" "$STAGE_ROOT/DEBIAN/postrm"
 chmod 0644 "$STAGE_ROOT/DEBIAN/control" "$STAGE_ROOT/DEBIAN/conffiles"
 
 install -m 0755 "$BIN_PATH" "$STAGE_ROOT/usr/bin/photoframe-service"
 install -m 0644 "$ROOT_DIR/packaging/debian/photoframe.service" \
   "$STAGE_ROOT/lib/systemd/system/photoframe.service"
 install -m 0644 "$ROOT_DIR/config.example.yaml" "$STAGE_ROOT/etc/photoframe/config.yaml"
+chmod 0755 "$STAGE_ROOT/etc/photoframe" "$STAGE_ROOT/etc/photoframe/images"
 
 DEB_PATH="$ROOT_DIR/target/package/${PKG_NAME}_${VERSION}_${DEB_ARCH}.deb"
 DPKG_DEB_OPTS=("-Z${COMPRESSION}")

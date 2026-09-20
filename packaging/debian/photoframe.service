@@ -13,7 +13,7 @@ ProtectSystem=strict
 ProtectHome=true
 NoNewPrivileges=true
 PrivateTmp=true
-ReadWritePaths=/var/lib/photoframe /etc/photoframe
+ReadWritePaths=/etc/photoframe
 
 [Install]
 WantedBy=multi-user.target

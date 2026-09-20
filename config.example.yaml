@@ -1,7 +1,7 @@
 bind_address: 0.0.0.0
-port: 8080
-image_dir: /home/alex/projects/github/photoframe/images
-database_path: /home/alex/projects/github/photoframe/photoframe.sqlite
+port: 8181
+image_dir: /etc/photoframe/images
+database_path: /etc/photoframe/photoframe.sqlite
 slideshow_interval_seconds: 30
 night_mode_start: "20:00"
 night_mode_end: "06:00"

@@ -6,12 +6,15 @@ if [ "$1" = "configure" ]; then
     groupadd --system photoframe
   fi
   if ! getent passwd photoframe >/dev/null 2>&1; then
-    useradd --system --gid photoframe --home-dir /var/lib/photoframe --no-create-home --shell /usr/sbin/nologin photoframe
+    useradd --system --gid photoframe --home-dir /etc/photoframe --no-create-home --shell /usr/sbin/nologin photoframe
+  else
+    usermod -d /etc/photoframe photoframe >/dev/null 2>&1 || true
   fi
 
-  mkdir -p /var/lib/photoframe/images
-  mkdir -p /etc/photoframe
-  chown -R photoframe:photoframe /var/lib/photoframe
+  mkdir -p /etc/photoframe/images
+  chown -R photoframe:photoframe /etc/photoframe
+  chmod 0755 /etc/photoframe
+  chmod 0755 /etc/photoframe/images
 
   if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload || true

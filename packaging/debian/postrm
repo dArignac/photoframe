@@ -1,0 +1,33 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+  remove)
+    rm -rf /etc/photoframe/images
+    if [ -d /etc/photoframe ]; then
+      rmdir /etc/photoframe 2>/dev/null || true
+    fi
+    ;;
+  purge)
+    rm -rf /etc/photoframe/images
+    rm -f /etc/photoframe/photoframe.sqlite*
+    if [ -d /etc/photoframe ]; then
+      rmdir /etc/photoframe 2>/dev/null || true
+    fi
+    if getent passwd photoframe >/dev/null 2>&1; then
+      userdel photoframe 2>/dev/null || true
+    fi
+    if getent group photoframe >/dev/null 2>&1; then
+      groupdel photoframe 2>/dev/null || true
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl daemon-reload || true
+    fi
+    ;;
+  upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+    ;;
+  *)
+    ;;
+esac
+
+exit 0

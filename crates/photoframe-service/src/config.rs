@@ -52,9 +52,9 @@ impl Default for AppConfig {
             bind_address: "0.0.0.0"
                 .parse()
                 .expect("default bind address must be valid"),
-            port: 8080,
-            image_dir: PathBuf::from("/var/lib/photoframe/images"),
-            database_path: PathBuf::from("/var/lib/photoframe/photoframe.sqlite"),
+            port: 8181,
+            image_dir: PathBuf::from("/etc/photoframe/images"),
+            database_path: PathBuf::from("/etc/photoframe/photoframe.sqlite"),
             slideshow_interval_seconds: 30,
             night_mode_start: "20:00".to_string(),
             night_mode_end: "06:00".to_string(),
