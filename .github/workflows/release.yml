@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 0.1.0 or v0.1.0)'
+        required: true
+        type: string
+        default: '0.1.0'
+      release_notes:
+        description: 'Release notes (shown in GitHub Release)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Test, Build & Release ARMv7 Package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate inputs and normalize version
+        id: validate
+        run: |
+          VERSION="${{ inputs.version }}"
+          CLEAN_VER="${VERSION#v}"
+
+          # Fail fast: Validate semantic versioning format (e.g. 0.1.0 or v0.1.0)
+          if [[ ! "$CLEAN_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid version format: '${VERSION}'. Expected semantic versioning format like '0.1.0' or 'v0.1.0'." >&2
+            exit 1
+          fi
+
+          # Fail fast: Validate release notes are non-empty
+          RAW_NOTES="${{ inputs.release_notes }}"
+          TRIMMED_NOTES="$(echo "$RAW_NOTES" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          if [[ -z "$TRIMMED_NOTES" ]]; then
+            echo "::error::Release notes must be provided and cannot be empty or whitespace only." >&2
+            exit 1
+          fi
+
+          echo "pkg_version=${CLEAN_VER}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${CLEAN_VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-unknown-linux-gnueabihf
+          components: clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests and clippy
+        run: |
+          cargo test --verbose
+          cargo clippy --all-targets -- -D warnings
+
+      - name: Install ARMv7 cross-compilation toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-arm-linux-gnueabihf
+
+      - name: Build ARMv7 Debian package
+        env:
+          TARGET: armv7-unknown-linux-gnueabihf
+          CC_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-gcc
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+        run: |
+          ./scripts/build-deb.sh "${{ steps.validate.outputs.pkg_version }}"
+
+      - name: Upload Debian package as build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: photoframe-${{ steps.validate.outputs.pkg_version }}-armhf-deb
+          path: target/package/*.deb
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.validate.outputs.tag }}
+          name: PhotoFrame ${{ steps.validate.outputs.tag }}
+          body: ${{ inputs.release_notes }}
+          files: target/package/*.deb
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
