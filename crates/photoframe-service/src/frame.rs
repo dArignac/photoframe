@@ -145,6 +145,8 @@ const FRAME_HTML: &str = r#"<!doctype html>
     let hassDisplayTimer = null;
     let hassDashboardVisible = false;
     let latestHassUrl = null;
+    let isFetchingHass = false;
+    let lastShowTime = 0;
     let imageIndex = 0;
 
     function clearRotationTimer() {
@@ -179,21 +181,33 @@ const FRAME_HTML: &str = r#"<!doctype html>
       return Boolean(currentState && currentState.hass_dashboard_enabled && currentState.hass_dashboard_url);
     }
 
-    function fetchDashboardImage() {
+    function fetchDashboardImage(force = false) {
       if (!isDashboardEnabled()) return;
-      if (currentState.night_mode_active) return;
+      if (currentState.night_mode_active && !force) return;
+      if (isFetchingHass) return;
 
       const baseUrl = currentState.hass_dashboard_url.trim();
       if (!baseUrl) return;
 
+      isFetchingHass = true;
       const cacheBustUrl = `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}_t=${Date.now()}`;
       const preloadImg = new Image();
       preloadImg.onload = () => {
+        isFetchingHass = false;
         latestHassUrl = cacheBustUrl;
-        hassDashboardImage.src = cacheBustUrl;
+        if (hassDashboardVisible) {
+          hassDashboardImage.src = cacheBustUrl;
+          hassDashboardImage.style.display = 'block';
+        }
       };
       preloadImg.onerror = (err) => {
+        isFetchingHass = false;
         console.warn('Failed to fetch Home Assistant dashboard image:', err);
+        if (hassDashboardVisible && !latestHassUrl) {
+          setOverlay('Dashboard unavailable');
+          setTimeout(() => setOverlay(''), 3000);
+          hideDashboard();
+        }
       };
       preloadImg.src = cacheBustUrl;
     }
@@ -215,14 +229,20 @@ const FRAME_HTML: &str = r#"<!doctype html>
 
     function showDashboard() {
       if (!isDashboardEnabled()) return;
-      if (!latestHassUrl) {
-        fetchDashboardImage();
-      }
-      hassDashboardVisible = true;
-      hassDashboardImage.style.display = 'block';
-      clearRotationTimer();
 
+      lastShowTime = Date.now();
+      hassDashboardVisible = true;
+      clearRotationTimer();
       clearHassDisplayTimer();
+
+      if (latestHassUrl) {
+        hassDashboardImage.src = latestHassUrl;
+        hassDashboardImage.style.display = 'block';
+      } else {
+        // Fetch on-demand (e.g. night mode or first tap before background fetch completes)
+        fetchDashboardImage(true);
+      }
+
       const durationSeconds = (currentState && currentState.hass_dashboard_display_seconds)
         ? currentState.hass_dashboard_display_seconds
         : 30;
@@ -232,6 +252,7 @@ const FRAME_HTML: &str = r#"<!doctype html>
     function hideDashboard() {
       hassDashboardVisible = false;
       hassDashboardImage.style.display = 'none';
+      hassDashboardImage.src = '';
       clearHassDisplayTimer();
 
       if (currentState && currentState.night_mode_active) {
@@ -245,6 +266,7 @@ const FRAME_HTML: &str = r#"<!doctype html>
     function toggleDashboard() {
       if (!isDashboardEnabled()) return;
       if (hassDashboardVisible) {
+        if (Date.now() - lastShowTime < 300) return;
         hideDashboard();
       } else {
         showDashboard();
@@ -370,12 +392,10 @@ const FRAME_HTML: &str = r#"<!doctype html>
         restartPollTimer();
       }
 
-      if (hassChanged || !hassRefreshTimer) {
+      if (nextState.night_mode_active) {
+        clearHassRefreshTimer();
+      } else if (hassChanged || !hassRefreshTimer) {
         restartHassRefreshTimer();
-      }
-
-      if (nightChanged && !nextState.night_mode_active) {
-        fetchDashboardImage();
       }
     }
 

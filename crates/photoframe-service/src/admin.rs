@@ -4,7 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use axum::{
     Json,
     extract::{Multipart, Path as AxumPath, State},
@@ -60,31 +60,26 @@ impl IntoResponse for ApiError {
 
 type ApiResult<T> = std::result::Result<T, ApiError>;
 
-fn default_hass_dashboard_url() -> String {
-    "http://localhost:8080".to_string()
-}
-
-const fn default_hass_dashboard_display_seconds() -> u64 {
-    30
-}
-
-const fn default_hass_dashboard_refresh_interval_seconds() -> u64 {
-    60
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct AdminSettingsPayload {
-    slideshow_interval_seconds: u64,
-    night_mode_start: String,
-    night_mode_end: String,
-    #[serde(default)]
-    hass_dashboard_enabled: bool,
-    #[serde(default = "default_hass_dashboard_url")]
-    hass_dashboard_url: String,
-    #[serde(default = "default_hass_dashboard_display_seconds")]
-    hass_dashboard_display_seconds: u64,
-    #[serde(default = "default_hass_dashboard_refresh_interval_seconds")]
-    hass_dashboard_refresh_interval_seconds: u64,
+    pub slideshow_interval_seconds: u64,
+    pub night_mode_start: String,
+    pub night_mode_end: String,
+    pub hass_dashboard_enabled: bool,
+    pub hass_dashboard_url: String,
+    pub hass_dashboard_display_seconds: u64,
+    pub hass_dashboard_refresh_interval_seconds: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct UpdateSettingsPayload {
+    pub slideshow_interval_seconds: Option<u64>,
+    pub night_mode_start: Option<String>,
+    pub night_mode_end: Option<String>,
+    pub hass_dashboard_enabled: Option<bool>,
+    pub hass_dashboard_url: Option<String>,
+    pub hass_dashboard_display_seconds: Option<u64>,
+    pub hass_dashboard_refresh_interval_seconds: Option<u64>,
 }
 
 impl From<AdminSettings> for AdminSettingsPayload {
@@ -97,20 +92,6 @@ impl From<AdminSettings> for AdminSettingsPayload {
             hass_dashboard_url: s.hass_dashboard_url,
             hass_dashboard_display_seconds: s.hass_dashboard_display_seconds,
             hass_dashboard_refresh_interval_seconds: s.hass_dashboard_refresh_interval_seconds,
-        }
-    }
-}
-
-impl From<AdminSettingsPayload> for AdminSettings {
-    fn from(p: AdminSettingsPayload) -> Self {
-        Self {
-            slideshow_interval_seconds: p.slideshow_interval_seconds,
-            night_mode_start: p.night_mode_start,
-            night_mode_end: p.night_mode_end,
-            hass_dashboard_enabled: p.hass_dashboard_enabled,
-            hass_dashboard_url: p.hass_dashboard_url,
-            hass_dashboard_display_seconds: p.hass_dashboard_display_seconds,
-            hass_dashboard_refresh_interval_seconds: p.hass_dashboard_refresh_interval_seconds,
         }
     }
 }
@@ -316,36 +297,69 @@ pub(crate) async fn get_settings(
 
 pub(crate) async fn update_settings(
     State(state): State<AppState>,
-    Json(payload): Json<AdminSettingsPayload>,
+    Json(payload): Json<UpdateSettingsPayload>,
 ) -> ApiResult<StatusCode> {
-    validate_settings_payload(&payload).map_err(|err| ApiError::bad_request(err.to_string()))?;
-
+    let defaults = AdminSettings::from_config(&state.config);
     let db_path = state.config.database_path.clone();
-    let to_save: AdminSettings = payload.into();
-    tokio::task::spawn_blocking(move || db::save_admin_settings(&db_path, &to_save))
+
+    let mut current = tokio::task::spawn_blocking({
+        let db_path = db_path.clone();
+        move || db::load_admin_settings(&db_path, &defaults)
+    })
+    .await
+    .map_err(|err| ApiError::internal(anyhow!("spawn_blocking error: {err}")))?
+    .map_err(ApiError::internal)?;
+
+    if let Some(v) = payload.slideshow_interval_seconds {
+        if v == 0 {
+            return Err(ApiError::bad_request(
+                "slideshow_interval_seconds must be greater than 0",
+            ));
+        }
+        current.slideshow_interval_seconds = v;
+    }
+    if let Some(v) = payload.night_mode_start {
+        validate_hh_mm("night_mode_start", &v).map_err(|e| ApiError::bad_request(e.to_string()))?;
+        current.night_mode_start = v;
+    }
+    if let Some(v) = payload.night_mode_end {
+        validate_hh_mm("night_mode_end", &v).map_err(|e| ApiError::bad_request(e.to_string()))?;
+        current.night_mode_end = v;
+    }
+    if let Some(v) = payload.hass_dashboard_enabled {
+        current.hass_dashboard_enabled = v;
+    }
+    if let Some(v) = payload.hass_dashboard_url {
+        current.hass_dashboard_url = v;
+    }
+    if let Some(v) = payload.hass_dashboard_display_seconds {
+        if v == 0 || v > 86400 {
+            return Err(ApiError::bad_request(
+                "hass_dashboard_display_seconds must be between 1 and 86400",
+            ));
+        }
+        current.hass_dashboard_display_seconds = v;
+    }
+    if let Some(v) = payload.hass_dashboard_refresh_interval_seconds {
+        if v == 0 || v > 86400 {
+            return Err(ApiError::bad_request(
+                "hass_dashboard_refresh_interval_seconds must be between 1 and 86400",
+            ));
+        }
+        current.hass_dashboard_refresh_interval_seconds = v;
+    }
+
+    if current.hass_dashboard_enabled {
+        crate::config::validate_hass_dashboard_url(&current.hass_dashboard_url)
+            .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    }
+
+    tokio::task::spawn_blocking(move || db::save_admin_settings(&db_path, &current))
         .await
         .map_err(|err| ApiError::internal(anyhow!("spawn_blocking error: {err}")))?
         .map_err(ApiError::internal)?;
 
     Ok(StatusCode::NO_CONTENT)
-}
-
-fn validate_settings_payload(payload: &AdminSettingsPayload) -> Result<()> {
-    if payload.slideshow_interval_seconds == 0 {
-        bail!("slideshow_interval_seconds must be greater than 0");
-    }
-    validate_hh_mm("night_mode_start", &payload.night_mode_start)?;
-    validate_hh_mm("night_mode_end", &payload.night_mode_end)?;
-
-    if payload.hass_dashboard_display_seconds == 0 {
-        bail!("hass_dashboard_display_seconds must be greater than 0");
-    }
-    if payload.hass_dashboard_refresh_interval_seconds == 0 {
-        bail!("hass_dashboard_refresh_interval_seconds must be greater than 0");
-    }
-    crate::config::validate_hass_dashboard_url(&payload.hass_dashboard_url)?;
-
-    Ok(())
 }
 
 fn make_stored_file_name(original_name: &str) -> Result<String> {
@@ -520,7 +534,7 @@ const ADMIN_HTML: &str = r#"<!doctype html>
         <input id="hass_dashboard_enabled" type="checkbox"> Enable dashboard on screen tap/click
       </label>
       <label class="row">Dashboard screenshot URL
-        <input id="hass_dashboard_url" type="url" placeholder="http://localhost:8080" required>
+        <input id="hass_dashboard_url" type="url" placeholder="http://localhost:8080">
       </label>
       <label class="row">Display duration (seconds)
         <input id="hass_dashboard_display_seconds" type="number" min="1" max="86400" required>

@@ -259,9 +259,10 @@ pub fn load_admin_settings(
             "night_mode_start" => settings.night_mode_start = value,
             "night_mode_end" => settings.night_mode_end = value,
             "hass_dashboard_enabled" => {
-                settings.hass_dashboard_enabled = value
-                    .parse()
-                    .with_context(|| "invalid boolean value for settings.hass_dashboard_enabled")?;
+                settings.hass_dashboard_enabled = matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "true" | "1" | "yes"
+                );
             }
             "hass_dashboard_url" => settings.hass_dashboard_url = value,
             "hass_dashboard_display_seconds" => {

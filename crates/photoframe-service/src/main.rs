@@ -321,12 +321,98 @@ mod tests {
             "hass_dashboard_refresh_interval_seconds": 50
         }"#;
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/admin/api/settings")
                     .header("content-type", "application/json")
                     .body(Body::from(bad_payload))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        // 5. Partial update: updating only slideshow_interval_seconds preserves HASS settings
+        let partial_payload = r#"{ "slideshow_interval_seconds": 60 }"#;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/api/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(partial_payload))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/api/settings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body_str.contains(r#""slideshow_interval_seconds":60"#));
+        assert!(body_str.contains(r#""hass_dashboard_enabled":true"#));
+        assert!(
+            body_str.contains(r#""hass_dashboard_url":"http://192.168.1.100:8080/screenshot.png""#)
+        );
+        assert!(body_str.contains(r#""hass_dashboard_display_seconds":25"#));
+
+        // 6. Disabling dashboard with empty URL succeeds
+        let disable_payload = r#"{
+            "hass_dashboard_enabled": false,
+            "hass_dashboard_url": ""
+        }"#;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/api/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(disable_payload))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        // 7. Bounds checking: 0 and >86400 return BAD_REQUEST
+        let bad_interval = r#"{ "hass_dashboard_refresh_interval_seconds": 0 }"#;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/api/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(bad_interval))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let bad_display = r#"{ "hass_dashboard_display_seconds": 90000 }"#;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/api/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(bad_display))
                     .unwrap(),
             )
             .await

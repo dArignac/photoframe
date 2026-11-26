@@ -252,13 +252,17 @@ fn validate(config: &AppConfig) -> Result<()> {
     validate_hh_mm("night_mode_start", &config.night_mode_start)?;
     validate_hh_mm("night_mode_end", &config.night_mode_end)?;
 
-    if config.hass_dashboard_display_seconds == 0 {
-        bail!("hass_dashboard_display_seconds must be greater than 0");
+    if config.hass_dashboard_display_seconds == 0 || config.hass_dashboard_display_seconds > 86400 {
+        bail!("hass_dashboard_display_seconds must be between 1 and 86400");
     }
-    if config.hass_dashboard_refresh_interval_seconds == 0 {
-        bail!("hass_dashboard_refresh_interval_seconds must be greater than 0");
+    if config.hass_dashboard_refresh_interval_seconds == 0
+        || config.hass_dashboard_refresh_interval_seconds > 86400
+    {
+        bail!("hass_dashboard_refresh_interval_seconds must be between 1 and 86400");
     }
-    validate_hass_dashboard_url(&config.hass_dashboard_url)?;
+    if config.hass_dashboard_enabled {
+        validate_hass_dashboard_url(&config.hass_dashboard_url)?;
+    }
 
     Ok(())
 }
@@ -268,8 +272,18 @@ pub(crate) fn validate_hass_dashboard_url(url: &str) -> Result<()> {
     if trimmed.is_empty() {
         bail!("hass_dashboard_url cannot be empty");
     }
-    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+    if trimmed.contains('#') {
+        bail!("hass_dashboard_url must not contain a URL fragment ('#')");
+    }
+    let rest = if let Some(stripped) = trimmed.strip_prefix("http://") {
+        stripped
+    } else if let Some(stripped) = trimmed.strip_prefix("https://") {
+        stripped
+    } else {
         bail!("hass_dashboard_url must start with http:// or https://");
+    };
+    if rest.trim().is_empty() {
+        bail!("hass_dashboard_url must contain a host");
     }
     Ok(())
 }
@@ -382,23 +396,45 @@ mod tests {
         };
         assert!(validate(&config_bad_hass_display).is_err());
 
+        let config_overflow_hass_display = AppConfig {
+            hass_dashboard_display_seconds: 86401,
+            ..Default::default()
+        };
+        assert!(validate(&config_overflow_hass_display).is_err());
+
         let config_bad_hass_refresh = AppConfig {
             hass_dashboard_refresh_interval_seconds: 0,
             ..Default::default()
         };
         assert!(validate(&config_bad_hass_refresh).is_err());
 
+        let config_overflow_hass_refresh = AppConfig {
+            hass_dashboard_refresh_interval_seconds: 86401,
+            ..Default::default()
+        };
+        assert!(validate(&config_overflow_hass_refresh).is_err());
+
         let config_bad_hass_url = AppConfig {
+            hass_dashboard_enabled: true,
             hass_dashboard_url: "ftp://localhost:8080".to_string(),
             ..Default::default()
         };
         assert!(validate(&config_bad_hass_url).is_err());
 
         let config_empty_hass_url = AppConfig {
+            hass_dashboard_enabled: true,
             hass_dashboard_url: "".to_string(),
             ..Default::default()
         };
         assert!(validate(&config_empty_hass_url).is_err());
+
+        // Empty URL is permitted if dashboard is disabled
+        let config_disabled_empty_url = AppConfig {
+            hass_dashboard_enabled: false,
+            hass_dashboard_url: "".to_string(),
+            ..Default::default()
+        };
+        assert!(validate(&config_disabled_empty_url).is_ok());
     }
 
     #[test]
@@ -411,6 +447,9 @@ mod tests {
         assert!(validate_hass_dashboard_url("ftp://example.com").is_err());
         assert!(validate_hass_dashboard_url("").is_err());
         assert!(validate_hass_dashboard_url("   ").is_err());
+        assert!(validate_hass_dashboard_url("http://").is_err());
+        assert!(validate_hass_dashboard_url("https://").is_err());
+        assert!(validate_hass_dashboard_url("http://localhost:8080#section").is_err());
         assert!(validate_hass_dashboard_url("localhost:8080").is_err());
     }
 }
