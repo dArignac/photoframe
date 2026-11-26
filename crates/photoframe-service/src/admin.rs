@@ -16,7 +16,7 @@ use tokio::fs;
 
 use crate::{
     AppState,
-    config::validate_hh_mm,
+    config::{validate_hh_mm, validate_seconds_bound},
     db::{self, AdminSettings, StoredImage},
 };
 
@@ -62,9 +62,75 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct AdminSettingsPayload {
-    slideshow_interval_seconds: u64,
-    night_mode_start: String,
-    night_mode_end: String,
+    pub slideshow_interval_seconds: u64,
+    pub night_mode_start: String,
+    pub night_mode_end: String,
+    pub hass_dashboard_enabled: bool,
+    pub hass_dashboard_url: String,
+    pub hass_dashboard_display_seconds: u64,
+    pub hass_dashboard_refresh_interval_seconds: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct UpdateSettingsPayload {
+    pub slideshow_interval_seconds: Option<u64>,
+    pub night_mode_start: Option<String>,
+    pub night_mode_end: Option<String>,
+    pub hass_dashboard_enabled: Option<bool>,
+    pub hass_dashboard_url: Option<String>,
+    pub hass_dashboard_display_seconds: Option<u64>,
+    pub hass_dashboard_refresh_interval_seconds: Option<u64>,
+}
+
+impl UpdateSettingsPayload {
+    pub(crate) fn apply_to(&self, current: &mut AdminSettings) -> Result<()> {
+        if let Some(v) = self.slideshow_interval_seconds {
+            if v == 0 {
+                bail!("slideshow_interval_seconds must be greater than 0");
+            }
+            current.slideshow_interval_seconds = v;
+        }
+        if let Some(ref v) = self.night_mode_start {
+            validate_hh_mm("night_mode_start", v)?;
+            current.night_mode_start = v.clone();
+        }
+        if let Some(ref v) = self.night_mode_end {
+            validate_hh_mm("night_mode_end", v)?;
+            current.night_mode_end = v.clone();
+        }
+        if let Some(v) = self.hass_dashboard_enabled {
+            current.hass_dashboard_enabled = v;
+        }
+        if let Some(ref v) = self.hass_dashboard_url {
+            current.hass_dashboard_url = v.clone();
+        }
+        if let Some(v) = self.hass_dashboard_display_seconds {
+            validate_seconds_bound("hass_dashboard_display_seconds", v)?;
+            current.hass_dashboard_display_seconds = v;
+        }
+        if let Some(v) = self.hass_dashboard_refresh_interval_seconds {
+            validate_seconds_bound("hass_dashboard_refresh_interval_seconds", v)?;
+            current.hass_dashboard_refresh_interval_seconds = v;
+        }
+        if current.hass_dashboard_enabled {
+            crate::config::validate_hass_dashboard_url(&current.hass_dashboard_url)?;
+        }
+        Ok(())
+    }
+}
+
+impl From<AdminSettings> for AdminSettingsPayload {
+    fn from(s: AdminSettings) -> Self {
+        Self {
+            slideshow_interval_seconds: s.slideshow_interval_seconds,
+            night_mode_start: s.night_mode_start,
+            night_mode_end: s.night_mode_end,
+            hass_dashboard_enabled: s.hass_dashboard_enabled,
+            hass_dashboard_url: s.hass_dashboard_url,
+            hass_dashboard_display_seconds: s.hass_dashboard_display_seconds,
+            hass_dashboard_refresh_interval_seconds: s.hass_dashboard_refresh_interval_seconds,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,21 +273,20 @@ pub(crate) async fn upload_image(
 
         let db_path = state.config.database_path.clone();
         let stored_clone = stored_name.clone();
-        let inserted = match tokio::task::spawn_blocking(move || {
-            db::insert_image(&db_path, &stored_clone)
-        })
-        .await
-        {
-            Ok(Ok(img)) => img,
-            Ok(Err(err)) => {
-                let _ = fs::remove_file(&destination).await;
-                return Err(ApiError::internal(err));
-            }
-            Err(err) => {
-                let _ = fs::remove_file(&destination).await;
-                return Err(ApiError::internal(anyhow!("spawn_blocking error: {err}")));
-            }
-        };
+        let inserted =
+            match tokio::task::spawn_blocking(move || db::insert_image(&db_path, &stored_clone))
+                .await
+            {
+                Ok(Ok(img)) => img,
+                Ok(Err(err)) => {
+                    let _ = fs::remove_file(&destination).await;
+                    return Err(ApiError::internal(err));
+                }
+                Err(err) => {
+                    let _ = fs::remove_file(&destination).await;
+                    return Err(ApiError::internal(anyhow!("spawn_blocking error: {err}")));
+                }
+            };
         uploaded.push(inserted);
     }
 
@@ -257,50 +322,41 @@ pub(crate) async fn reorder_images(
 pub(crate) async fn get_settings(
     State(state): State<AppState>,
 ) -> ApiResult<Json<AdminSettingsPayload>> {
-    let defaults = AdminSettings {
-        slideshow_interval_seconds: state.config.slideshow_interval_seconds,
-        night_mode_start: state.config.night_mode_start.clone(),
-        night_mode_end: state.config.night_mode_end.clone(),
-    };
+    let defaults = AdminSettings::from_config(&state.config);
     let db_path = state.config.database_path.clone();
-    let settings = tokio::task::spawn_blocking(move || db::load_admin_settings(&db_path, &defaults))
-        .await
-        .map_err(|err| ApiError::internal(anyhow!("spawn_blocking error: {err}")))?
-        .map_err(ApiError::internal)?;
-    Ok(Json(AdminSettingsPayload {
-        slideshow_interval_seconds: settings.slideshow_interval_seconds,
-        night_mode_start: settings.night_mode_start,
-        night_mode_end: settings.night_mode_end,
-    }))
+    let settings =
+        tokio::task::spawn_blocking(move || db::load_admin_settings(&db_path, &defaults))
+            .await
+            .map_err(|err| ApiError::internal(anyhow!("spawn_blocking error: {err}")))?
+            .map_err(ApiError::internal)?;
+    Ok(Json(settings.into()))
 }
 
 pub(crate) async fn update_settings(
     State(state): State<AppState>,
-    Json(payload): Json<AdminSettingsPayload>,
+    Json(payload): Json<UpdateSettingsPayload>,
 ) -> ApiResult<StatusCode> {
-    validate_settings_payload(&payload).map_err(|err| ApiError::bad_request(err.to_string()))?;
-
+    let defaults = AdminSettings::from_config(&state.config);
     let db_path = state.config.database_path.clone();
-    let to_save = AdminSettings {
-        slideshow_interval_seconds: payload.slideshow_interval_seconds,
-        night_mode_start: payload.night_mode_start,
-        night_mode_end: payload.night_mode_end,
-    };
-    tokio::task::spawn_blocking(move || db::save_admin_settings(&db_path, &to_save))
+
+    let mut current = tokio::task::spawn_blocking({
+        let db_path = db_path.clone();
+        move || db::load_admin_settings(&db_path, &defaults)
+    })
+    .await
+    .map_err(|err| ApiError::internal(anyhow!("spawn_blocking error: {err}")))?
+    .map_err(ApiError::internal)?;
+
+    payload
+        .apply_to(&mut current)
+        .map_err(|err| ApiError::bad_request(err.to_string()))?;
+
+    tokio::task::spawn_blocking(move || db::save_admin_settings(&db_path, &current))
         .await
         .map_err(|err| ApiError::internal(anyhow!("spawn_blocking error: {err}")))?
         .map_err(ApiError::internal)?;
 
     Ok(StatusCode::NO_CONTENT)
-}
-
-fn validate_settings_payload(payload: &AdminSettingsPayload) -> Result<()> {
-    if payload.slideshow_interval_seconds == 0 {
-        bail!("slideshow_interval_seconds must be greater than 0");
-    }
-    validate_hh_mm("night_mode_start", &payload.night_mode_start)?;
-    validate_hh_mm("night_mode_end", &payload.night_mode_end)?;
-    Ok(())
 }
 
 fn make_stored_file_name(original_name: &str) -> Result<String> {
@@ -409,6 +465,7 @@ const ADMIN_HTML: &str = r#"<!doctype html>
     .status { min-height: 1.2rem; margin-top: 0.5rem; color: #114411; }
     .error { color: #8b0000; }
     input[type="number"] { width: 8rem; }
+    input[type="url"], input[type="text"] { width: 18rem; }
     .thumb {
       width: 100%;
       aspect-ratio: 4 / 3;
@@ -468,6 +525,26 @@ const ADMIN_HTML: &str = r#"<!doctype html>
   </section>
 
   <section>
+    <h2>Home Assistant Dashboard</h2>
+    <form id="hass-settings-form">
+      <label class="row">
+        <input id="hass_dashboard_enabled" type="checkbox"> Enable dashboard on screen tap/click
+      </label>
+      <label class="row">Dashboard screenshot URL
+        <input id="hass_dashboard_url" type="url" placeholder="http://localhost:8080">
+      </label>
+      <label class="row">Display duration (seconds)
+        <input id="hass_dashboard_display_seconds" type="number" min="1" max="86400" required>
+      </label>
+      <label class="row">Refresh interval (seconds)
+        <input id="hass_dashboard_refresh_interval_seconds" type="number" min="1" max="86400" required>
+      </label>
+      <button type="submit">Save dashboard settings</button>
+    </form>
+    <div id="hass-settings-status" class="status"></div>
+  </section>
+
+  <section>
     <h2>Image order</h2>
     <p>Drag and drop to reorder, then save.</p>
     <ul id="image-list"></ul>
@@ -482,6 +559,7 @@ const ADMIN_HTML: &str = r#"<!doctype html>
     const orderStatus = document.getElementById('order-status');
     const uploadStatus = document.getElementById('upload-status');
     const settingsStatus = document.getElementById('settings-status');
+    const hassSettingsStatus = document.getElementById('hass-settings-status');
     let dragSource = null;
 
     function setStatus(el, message, isError = false) {
@@ -590,6 +668,10 @@ const ADMIN_HTML: &str = r#"<!doctype html>
       document.getElementById('slideshow_interval_seconds').value = settings.slideshow_interval_seconds;
       document.getElementById('night_mode_start').value = settings.night_mode_start;
       document.getElementById('night_mode_end').value = settings.night_mode_end;
+      document.getElementById('hass_dashboard_enabled').checked = Boolean(settings.hass_dashboard_enabled);
+      document.getElementById('hass_dashboard_url').value = settings.hass_dashboard_url || 'http://localhost:8080';
+      document.getElementById('hass_dashboard_display_seconds').value = settings.hass_dashboard_display_seconds || 30;
+      document.getElementById('hass_dashboard_refresh_interval_seconds').value = settings.hass_dashboard_refresh_interval_seconds || 60;
     }
 
     document.getElementById('upload-form').addEventListener('submit', async (event) => {
@@ -631,14 +713,21 @@ const ADMIN_HTML: &str = r#"<!doctype html>
       }
     });
 
-    document.getElementById('settings-form').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      setStatus(settingsStatus, '');
-      const payload = {
+    function collectSettingsPayload() {
+      return {
         slideshow_interval_seconds: Number(document.getElementById('slideshow_interval_seconds').value),
         night_mode_start: document.getElementById('night_mode_start').value.trim(),
-        night_mode_end: document.getElementById('night_mode_end').value.trim()
+        night_mode_end: document.getElementById('night_mode_end').value.trim(),
+        hass_dashboard_enabled: document.getElementById('hass_dashboard_enabled').checked,
+        hass_dashboard_url: document.getElementById('hass_dashboard_url').value.trim(),
+        hass_dashboard_display_seconds: Number(document.getElementById('hass_dashboard_display_seconds').value),
+        hass_dashboard_refresh_interval_seconds: Number(document.getElementById('hass_dashboard_refresh_interval_seconds').value)
       };
+    }
+
+    async function saveSettings(statusEl) {
+      setStatus(statusEl, '');
+      const payload = collectSettingsPayload();
 
       try {
         await fetchJson('/admin/api/settings', {
@@ -646,10 +735,20 @@ const ADMIN_HTML: &str = r#"<!doctype html>
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
-        setStatus(settingsStatus, 'Settings saved.');
+        setStatus(statusEl, 'Settings saved.');
       } catch (error) {
-        setStatus(settingsStatus, error.message, true);
+        setStatus(statusEl, error.message, true);
       }
+    }
+
+    document.getElementById('settings-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      await saveSettings(settingsStatus);
+    });
+
+    document.getElementById('hass-settings-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      await saveSettings(hassSettingsStatus);
     });
 
     Promise.all([refreshSettings(), refreshImages()]).catch((error) => {
@@ -697,5 +796,56 @@ mod tests {
         assert!(!stored.contains(' '));
         assert!(!stored.contains('('));
         assert!(!stored.contains(')'));
+    }
+
+    #[test]
+    fn test_update_settings_payload_apply_to() {
+        let mut settings = AdminSettings {
+            slideshow_interval_seconds: 30,
+            night_mode_start: "22:00".to_string(),
+            night_mode_end: "06:00".to_string(),
+            hass_dashboard_enabled: false,
+            hass_dashboard_url: "http://localhost:8080".to_string(),
+            hass_dashboard_display_seconds: 30,
+            hass_dashboard_refresh_interval_seconds: 60,
+        };
+
+        // Partial update modifies only specified fields
+        let payload = UpdateSettingsPayload {
+            slideshow_interval_seconds: Some(45),
+            night_mode_start: None,
+            night_mode_end: None,
+            hass_dashboard_enabled: None,
+            hass_dashboard_url: None,
+            hass_dashboard_display_seconds: None,
+            hass_dashboard_refresh_interval_seconds: None,
+        };
+        payload.apply_to(&mut settings).unwrap();
+        assert_eq!(settings.slideshow_interval_seconds, 45);
+        assert_eq!(settings.night_mode_start, "22:00");
+
+        // Invalid zero slideshow interval fails
+        let invalid = UpdateSettingsPayload {
+            slideshow_interval_seconds: Some(0),
+            night_mode_start: None,
+            night_mode_end: None,
+            hass_dashboard_enabled: None,
+            hass_dashboard_url: None,
+            hass_dashboard_display_seconds: None,
+            hass_dashboard_refresh_interval_seconds: None,
+        };
+        assert!(invalid.apply_to(&mut settings).is_err());
+
+        // Enabling with empty URL fails validation
+        let bad_url = UpdateSettingsPayload {
+            slideshow_interval_seconds: None,
+            night_mode_start: None,
+            night_mode_end: None,
+            hass_dashboard_enabled: Some(true),
+            hass_dashboard_url: Some("".to_string()),
+            hass_dashboard_display_seconds: None,
+            hass_dashboard_refresh_interval_seconds: None,
+        };
+        assert!(bad_url.apply_to(&mut settings).is_err());
     }
 }

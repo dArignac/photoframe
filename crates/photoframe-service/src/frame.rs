@@ -26,6 +26,10 @@ pub(crate) struct FrameStatePayload {
     frame_poll_interval_seconds: u64,
     display_fit_mode: &'static str,
     night_mode_active: bool,
+    hass_dashboard_enabled: bool,
+    hass_dashboard_url: String,
+    hass_dashboard_display_seconds: u64,
+    hass_dashboard_refresh_interval_seconds: u64,
     images: Vec<FrameImage>,
 }
 
@@ -36,11 +40,7 @@ pub(crate) async fn frame_page() -> Html<&'static str> {
 pub(crate) async fn frame_state(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let settings_defaults = AdminSettings {
-        slideshow_interval_seconds: state.config.slideshow_interval_seconds,
-        night_mode_start: state.config.night_mode_start.clone(),
-        night_mode_end: state.config.night_mode_end.clone(),
-    };
+    let settings_defaults = AdminSettings::from_config(&state.config);
     let db_path = state.config.database_path.clone();
     let (settings, raw_images) = tokio::task::spawn_blocking(move || {
         let settings = db::load_admin_settings(&db_path, &settings_defaults)?;
@@ -66,6 +66,10 @@ pub(crate) async fn frame_state(
         frame_poll_interval_seconds: state.config.frame_poll_interval_seconds,
         display_fit_mode: state.config.display_fit_mode.as_str(),
         night_mode_active,
+        hass_dashboard_enabled: settings.hass_dashboard_enabled,
+        hass_dashboard_url: settings.hass_dashboard_url,
+        hass_dashboard_display_seconds: settings.hass_dashboard_display_seconds,
+        hass_dashboard_refresh_interval_seconds: settings.hass_dashboard_refresh_interval_seconds,
         images,
     }))
 }
@@ -97,6 +101,17 @@ const FRAME_HTML: &str = r#"<!doctype html>
     html, body { margin: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
     #frame-root { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; background: #000; }
     #frame-image { width: 100vw; height: 100vh; object-fit: contain; display: none; background: #000; }
+    #hass-dashboard-image {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      object-fit: contain;
+      display: none;
+      background: #000;
+      z-index: 10;
+      cursor: pointer;
+    }
     #status-overlay {
       position: fixed;
       left: 16px;
@@ -115,30 +130,136 @@ const FRAME_HTML: &str = r#"<!doctype html>
 <body>
   <div id="frame-root">
     <img id="frame-image" alt="PhotoFrame image">
+    <img id="hass-dashboard-image" alt="Home Assistant Dashboard">
   </div>
   <div id="status-overlay"></div>
 
   <script>
     const frameImage = document.getElementById('frame-image');
+    const hassDashboardImage = document.getElementById('hass-dashboard-image');
     const statusOverlay = document.getElementById('status-overlay');
     let currentState = null;
     let rotationTimer = null;
     let pollTimer = null;
+    let hassRefreshTimer = null;
+    let hassDisplayTimer = null;
+    let hassDashboardVisible = false;
+    let latestHassUrl = null;
+    let isFetchingHass = false;
+    let lastShowTime = 0;
     let imageIndex = 0;
 
     function clearRotationTimer() {
-      if (rotationTimer) {
-        clearInterval(rotationTimer);
-        rotationTimer = null;
-      }
+      clearInterval(rotationTimer);
+      rotationTimer = null;
     }
 
     function clearPollTimer() {
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = null;
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+
+    function clearHassRefreshTimer() {
+      clearInterval(hassRefreshTimer);
+      hassRefreshTimer = null;
+    }
+
+    function clearHassDisplayTimer() {
+      clearTimeout(hassDisplayTimer);
+      hassDisplayTimer = null;
+    }
+
+    function isDashboardEnabled() {
+      return Boolean(currentState && currentState.hass_dashboard_enabled && currentState.hass_dashboard_url && currentState.hass_dashboard_url.trim());
+    }
+
+    function fetchDashboardImage(force = false) {
+      if (!isDashboardEnabled() || (currentState.night_mode_active && !force) || isFetchingHass) return;
+
+      const baseUrl = currentState.hass_dashboard_url.trim();
+      isFetchingHass = true;
+      const cacheBustUrl = `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}_t=${Date.now()}`;
+      const preloadImg = new Image();
+      preloadImg.onload = () => {
+        isFetchingHass = false;
+        latestHassUrl = cacheBustUrl;
+        if (hassDashboardVisible) {
+          hassDashboardImage.src = cacheBustUrl;
+          hassDashboardImage.style.display = 'block';
+        }
+      };
+      preloadImg.onerror = (err) => {
+        isFetchingHass = false;
+        console.warn('Failed to fetch Home Assistant dashboard image:', err);
+        if (hassDashboardVisible && !latestHassUrl) {
+          setOverlay('Dashboard unavailable');
+          setTimeout(() => setOverlay(''), 3000);
+          hideDashboard();
+        }
+      };
+      preloadImg.src = cacheBustUrl;
+    }
+
+    function restartHassRefreshTimer() {
+      clearHassRefreshTimer();
+      if (!isDashboardEnabled()) {
+        latestHassUrl = null;
+        if (hassDashboardVisible) hideDashboard();
+        return;
+      }
+      const interval = (currentState && currentState.hass_dashboard_refresh_interval_seconds) || 60;
+      fetchDashboardImage();
+      hassRefreshTimer = setInterval(fetchDashboardImage, Math.max(1, interval) * 1000);
+    }
+
+    function showDashboard() {
+      if (!isDashboardEnabled()) return;
+
+      lastShowTime = Date.now();
+      hassDashboardVisible = true;
+      clearRotationTimer();
+      clearHassDisplayTimer();
+
+      if (latestHassUrl) {
+        hassDashboardImage.src = latestHassUrl;
+        hassDashboardImage.style.display = 'block';
+      } else {
+        // Fetch on-demand (e.g. night mode or first tap before background fetch completes)
+        fetchDashboardImage(true);
+      }
+
+      const duration = (currentState && currentState.hass_dashboard_display_seconds) || 30;
+      hassDisplayTimer = setTimeout(hideDashboard, Math.max(1, duration) * 1000);
+    }
+
+    function hideDashboard() {
+      hassDashboardVisible = false;
+      hassDashboardImage.style.display = 'none';
+      hassDashboardImage.src = '';
+      clearHassDisplayTimer();
+
+      if (currentState && currentState.night_mode_active) {
+        frameImage.style.display = 'none';
+      } else {
+        renderCurrentImage();
+        restartRotationTimer();
       }
     }
+
+    function toggleDashboard() {
+      if (!isDashboardEnabled()) return;
+      if (hassDashboardVisible) {
+        if (Date.now() - lastShowTime < 300) return;
+        hideDashboard();
+      } else {
+        showDashboard();
+      }
+    }
+
+    window.addEventListener('pointerup', (e) => {
+      if (e.button !== 0 && e.pointerType === 'mouse') return;
+      toggleDashboard();
+    });
 
     function setOverlay(text) {
       if (!text) {
@@ -170,13 +291,15 @@ const FRAME_HTML: &str = r#"<!doctype html>
       imageIndex = imageIndex % currentState.images.length;
       const image = currentState.images[imageIndex];
       frameImage.src = image.url;
-      frameImage.style.display = 'block';
+      if (!hassDashboardVisible) {
+        frameImage.style.display = 'block';
+      }
       setOverlay('');
     }
 
     function restartRotationTimer() {
       clearRotationTimer();
-      if (!currentState || currentState.night_mode_active) return;
+      if (!currentState || currentState.night_mode_active || hassDashboardVisible) return;
       if (!currentState.images || currentState.images.length <= 1) return;
       if (!currentState.slideshow_interval_seconds || currentState.slideshow_interval_seconds < 1) return;
 
@@ -196,13 +319,10 @@ const FRAME_HTML: &str = r#"<!doctype html>
 
     function restartPollTimer() {
       clearPollTimer();
-      const configuredSeconds = (currentState && currentState.frame_poll_interval_seconds)
-        ? currentState.frame_poll_interval_seconds
-        : 15;
-      const seconds = Math.max(1, configuredSeconds);
+      const interval = (currentState && currentState.frame_poll_interval_seconds) || 15;
       pollTimer = setInterval(() => {
         refreshState().catch((error) => setOverlay(`Frame refresh error: ${error.message}`));
-      }, seconds * 1000);
+      }, Math.max(1, interval) * 1000);
     }
 
     function keepCurrentImageIfPossible(previousState, nextState) {
@@ -226,12 +346,21 @@ const FRAME_HTML: &str = r#"<!doctype html>
       keepCurrentImageIfPossible(previousState, nextState);
       currentState = nextState;
 
-      const nightChanged = !previousState || previousState.night_mode_active !== nextState.night_mode_active;
-      const intervalChanged = !previousState || previousState.slideshow_interval_seconds !== nextState.slideshow_interval_seconds;
-      const imagesChanged = !previousState || JSON.stringify(previousState.images) !== JSON.stringify(nextState.images);
-      const pollChanged = !previousState || previousState.frame_poll_interval_seconds !== nextState.frame_poll_interval_seconds;
+      const isInitial = !previousState;
+      const nightChanged = isInitial || previousState.night_mode_active !== nextState.night_mode_active;
+      const intervalChanged = isInitial || previousState.slideshow_interval_seconds !== nextState.slideshow_interval_seconds;
+      const imagesChanged = isInitial || JSON.stringify(previousState.images) !== JSON.stringify(nextState.images);
+      const pollChanged = isInitial || previousState.frame_poll_interval_seconds !== nextState.frame_poll_interval_seconds;
+      const hassChanged = isInitial
+        || previousState.hass_dashboard_enabled !== nextState.hass_dashboard_enabled
+        || previousState.hass_dashboard_url !== nextState.hass_dashboard_url
+        || previousState.hass_dashboard_refresh_interval_seconds !== nextState.hass_dashboard_refresh_interval_seconds;
 
-      if (nightChanged || imagesChanged || !previousState) {
+      if (!isDashboardEnabled() && hassDashboardVisible) {
+        hideDashboard();
+      }
+
+      if (nightChanged || imagesChanged) {
         renderCurrentImage();
       }
 
@@ -241,6 +370,12 @@ const FRAME_HTML: &str = r#"<!doctype html>
 
       if (pollChanged || !pollTimer) {
         restartPollTimer();
+      }
+
+      if (nextState.night_mode_active) {
+        clearHassRefreshTimer();
+      } else if (hassChanged || !hassRefreshTimer) {
+        restartHassRefreshTimer();
       }
     }
 
@@ -259,12 +394,36 @@ mod tests {
         let start = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
         let end = NaiveTime::from_hms_opt(17, 0, 0).unwrap();
 
-        assert!(!is_time_in_window(NaiveTime::from_hms_opt(8, 59, 59).unwrap(), start, end));
-        assert!(is_time_in_window(NaiveTime::from_hms_opt(9, 0, 0).unwrap(), start, end));
-        assert!(is_time_in_window(NaiveTime::from_hms_opt(12, 0, 0).unwrap(), start, end));
-        assert!(is_time_in_window(NaiveTime::from_hms_opt(16, 59, 59).unwrap(), start, end));
-        assert!(!is_time_in_window(NaiveTime::from_hms_opt(17, 0, 0).unwrap(), start, end));
-        assert!(!is_time_in_window(NaiveTime::from_hms_opt(22, 0, 0).unwrap(), start, end));
+        assert!(!is_time_in_window(
+            NaiveTime::from_hms_opt(8, 59, 59).unwrap(),
+            start,
+            end
+        ));
+        assert!(is_time_in_window(
+            NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            start,
+            end
+        ));
+        assert!(is_time_in_window(
+            NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            start,
+            end
+        ));
+        assert!(is_time_in_window(
+            NaiveTime::from_hms_opt(16, 59, 59).unwrap(),
+            start,
+            end
+        ));
+        assert!(!is_time_in_window(
+            NaiveTime::from_hms_opt(17, 0, 0).unwrap(),
+            start,
+            end
+        ));
+        assert!(!is_time_in_window(
+            NaiveTime::from_hms_opt(22, 0, 0).unwrap(),
+            start,
+            end
+        ));
     }
 
     #[test]
@@ -272,13 +431,41 @@ mod tests {
         let start = NaiveTime::from_hms_opt(20, 0, 0).unwrap();
         let end = NaiveTime::from_hms_opt(6, 0, 0).unwrap();
 
-        assert!(is_time_in_window(NaiveTime::from_hms_opt(20, 0, 0).unwrap(), start, end));
-        assert!(is_time_in_window(NaiveTime::from_hms_opt(23, 30, 0).unwrap(), start, end));
-        assert!(is_time_in_window(NaiveTime::from_hms_opt(0, 0, 0).unwrap(), start, end));
-        assert!(is_time_in_window(NaiveTime::from_hms_opt(5, 59, 59).unwrap(), start, end));
-        assert!(!is_time_in_window(NaiveTime::from_hms_opt(6, 0, 0).unwrap(), start, end));
-        assert!(!is_time_in_window(NaiveTime::from_hms_opt(12, 0, 0).unwrap(), start, end));
-        assert!(!is_time_in_window(NaiveTime::from_hms_opt(19, 59, 59).unwrap(), start, end));
+        assert!(is_time_in_window(
+            NaiveTime::from_hms_opt(20, 0, 0).unwrap(),
+            start,
+            end
+        ));
+        assert!(is_time_in_window(
+            NaiveTime::from_hms_opt(23, 30, 0).unwrap(),
+            start,
+            end
+        ));
+        assert!(is_time_in_window(
+            NaiveTime::from_hms_opt(0, 0, 0).unwrap(),
+            start,
+            end
+        ));
+        assert!(is_time_in_window(
+            NaiveTime::from_hms_opt(5, 59, 59).unwrap(),
+            start,
+            end
+        ));
+        assert!(!is_time_in_window(
+            NaiveTime::from_hms_opt(6, 0, 0).unwrap(),
+            start,
+            end
+        ));
+        assert!(!is_time_in_window(
+            NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            start,
+            end
+        ));
+        assert!(!is_time_in_window(
+            NaiveTime::from_hms_opt(19, 59, 59).unwrap(),
+            start,
+            end
+        ));
     }
 
     #[test]

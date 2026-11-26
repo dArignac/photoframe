@@ -11,6 +11,7 @@ A lightweight, self-contained digital photo frame web service designed for the R
 - **Automated Night Mode:** Automatically blacks out the frame during configured hours (e.g., `20:00` to `06:00`), seamlessly supporting schedules that cross midnight.
 - **Admin Management Dashboard (`/admin`):** Simple web UI to upload photos (multi-file support for JPEG, PNG, WebP, GIF, BMP), remove photos, drag-and-drop to reorder the slideshow, and adjust settings on the fly.
 - **Dynamic Live Updates:** The fullscreen display client polls state automatically; changes to images, order, intervals, or night mode are reflected without reloading or restarting the service.
+- **On-Demand Home Assistant Dashboard Overlay:** Tap on touchscreens or click anywhere on screen to show a static Home Assistant Lovelace dashboard screenshot (via [`dArignac/hass-dashboard-screenshot`](https://github.com/dArignac/hass-dashboard-screenshot)) for a configurable duration (default: 30s) or tap again to dismiss, with minimal-footprint periodic background fetching (default: 60s).
 - **Ready for Raspberry Pi OS:** Packaged as a standard Debian package (`.deb`) with systemd service configuration, automatic startup on boot, and security sandboxing.
 
 ---
@@ -150,32 +151,42 @@ frame_poll_interval_seconds: 15
 
 # Image scaling mode: "contain" (letterboxed, shows full image) or "cover" (crops to fill display)
 display_fit_mode: contain
+
+# Home Assistant Dashboard Screenshot Display Settings
+hass_dashboard_enabled: false
+hass_dashboard_url: "http://localhost:8080"
+hass_dashboard_display_seconds: 30
+hass_dashboard_refresh_interval_seconds: 60
 ```
 
 ### Configuration Options Explained
 
-| Key                           | Default                             | Description                                                                                                                                         |
-| ----------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bind_address`                | `0.0.0.0`                           | IP address to bind. Set to `0.0.0.0` so you can access the admin dashboard from any device on your local Wi-Fi / LAN.                               |
-| `port`                        | `8181`                              | TCP port for both the display and admin dashboard.                                                                                                  |
-| `image_dir`                   | `/etc/photoframe/images`            | Storage directory for uploaded images. Must be writable by the `photoframe` user.                                                                   |
-| `database_path`               | `/etc/photoframe/photoframe.sqlite` | SQLite database file location. Parent directory must be writable.                                                                                   |
-| `slideshow_interval_seconds`  | `30`                                | Number of seconds each image is displayed before rotating to the next.                                                                              |
-| `night_mode_start`            | `"20:00"`                           | 24-hour clock time `HH:MM` when screen blackout starts.                                                                                             |
-| `night_mode_end`              | `"06:00"`                           | 24-hour clock time `HH:MM` when screen blackout ends. Supports midnight-crossing windows (e.g. `20:00` to `06:00`).                                 |
-| `frame_poll_interval_seconds` | `15`                                | Polling frequency for the `/frame` browser client to check for new images, settings, or night mode state.                                           |
-| `display_fit_mode`            | `contain`                           | How images fit the screen: `contain` preserves the original aspect ratio with black bars, while `cover` fills the screen, cropping edges if needed. |
+| Key                                       | Default                             | Description                                                                                                                                         |
+| ----------------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bind_address`                            | `0.0.0.0`                           | IP address to bind. Set to `0.0.0.0` so you can access the admin dashboard from any device on your local Wi-Fi / LAN.                               |
+| `port`                                    | `8181`                              | TCP port for both the display and admin dashboard.                                                                                                  |
+| `image_dir`                               | `/etc/photoframe/images`            | Storage directory for uploaded images. Must be writable by the `photoframe` user.                                                                   |
+| `database_path`                           | `/etc/photoframe/photoframe.sqlite` | SQLite database file location. Parent directory must be writable.                                                                                   |
+| `slideshow_interval_seconds`              | `30`                                | Number of seconds each image is displayed before rotating to the next.                                                                              |
+| `night_mode_start`                        | `"20:00"`                           | 24-hour clock time `HH:MM` when screen blackout starts.                                                                                             |
+| `night_mode_end`                          | `"06:00"`                           | 24-hour clock time `HH:MM` when screen blackout ends. Supports midnight-crossing windows (e.g. `20:00` to `06:00`).                                 |
+| `frame_poll_interval_seconds`             | `15`                                | Polling frequency for the `/frame` browser client to check for new images, settings, or night mode state.                                           |
+| `display_fit_mode`                        | `contain`                           | How images fit the screen: `contain` preserves the original aspect ratio with black bars, while `cover` fills the screen, cropping edges if needed. |
+| `hass_dashboard_enabled`                  | `false`                             | Master toggle to enable Home Assistant dashboard screenshot overlay on screen tap or click.                                                         |
+| `hass_dashboard_url`                      | `"http://localhost:8080"`           | URL where the static dashboard screenshot is served (e.g. by `hass-dashboard-screenshot`).                                                          |
+| `hass_dashboard_display_seconds`          | `30`                                | How long (in seconds) the dashboard is displayed on screen tap/click before the photo slideshow resumes.                                            |
+| `hass_dashboard_refresh_interval_seconds` | `60`                                | Interval (in seconds) between periodic background image fetches to minimize resource usage.                                                         |
 
 ### Configuration Precedence
 
 Settings are resolved in the following priority order (highest to lowest):
 
 1. **CLI Flags** (`--bind-address`, `--port`)
-2. **Environment Variables** (`PHOTOFRAME_*`, e.g., `PHOTOFRAME_PORT`, `PHOTOFRAME_IMAGE_DIR`)
+2. **Environment Variables** (`PHOTOFRAME_*`, e.g., `PHOTOFRAME_PORT`, `PHOTOFRAME_IMAGE_DIR`, `PHOTOFRAME_HASS_*`)
 3. **YAML Configuration File** (`--config <path>`, defaults to `/etc/photoframe/config.yaml`)
 4. **Compiled-in Application Defaults**
 
-> **Note:** Slideshow interval and night mode times can also be modified live through the `/admin` web interface without editing files. Values saved via the admin interface take precedence over the config file defaults.
+> **Note:** Slideshow interval, night mode times, and Home Assistant dashboard settings can also be modified live through the `/admin` web interface without editing files. Values saved via the admin interface take precedence over the config file defaults.
 
 ---
 
@@ -223,6 +234,7 @@ Once the service is running, two web interfaces are available:
 - **URL:** `http://<raspberry-pi-ip>:8181/frame` (or `http://localhost:8181/frame` locally)
 - Designed for display screens and digital photo frames.
 - Runs fullscreen with a black background, rotates through images automatically, and turns black during night mode.
+- **Home Assistant Dashboard on Tap/Click:** When enabled, tapping a touchscreen or clicking anywhere on the screen immediately brings up the configured Home Assistant dashboard screenshot. The dashboard remains visible for the configured duration (default: 30s) or is immediately dismissed on a second tap, after which the slideshow resumes seamlessly.
 - Recovers gracefully from network interruptions and automatically syncs within seconds when new photos are uploaded or settings are changed.
 
 ### 2. Admin Dashboard (`/admin`)
@@ -231,7 +243,8 @@ Once the service is running, two web interfaces are available:
 - **Upload Photos:** Drag and drop or browse files to upload multiple photos at once. Supported extensions: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`, `.bmp`.
 - **Reorder Slideshow:** Drag and drop image tiles in the visual grid into your desired order, then click **"Save order"**.
 - **Delete Images:** Click the **"Remove"** button below any image to delete it from disk and SQLite.
-- **Adjust Settings:** Change the slideshow interval (in seconds) or night mode schedule (`HH:MM`) directly in the browser and click **"Save settings"**.
+- **Slideshow Settings:** Change the slideshow interval (in seconds) or night mode schedule (`HH:MM`) directly in the browser and click **"Save settings"**.
+- **Home Assistant Dashboard:** Enable or disable the dashboard overlay, set the screenshot source URL, configure the display duration (in seconds), and adjust the periodic background image fetch interval (in seconds). Click **"Save dashboard settings"** to apply live without restarting.
 
 > [!NOTE]
 > PhotoFrame is designed for trusted local home networks (LAN/Wi-Fi) and does not require authentication. If deploying to an untrusted network, place it behind a reverse proxy (e.g. Nginx, Caddy) with authentication enabled.

@@ -44,6 +44,10 @@ pub struct AppConfig {
     pub night_mode_end: String,
     pub frame_poll_interval_seconds: u64,
     pub display_fit_mode: DisplayFitMode,
+    pub hass_dashboard_enabled: bool,
+    pub hass_dashboard_url: String,
+    pub hass_dashboard_display_seconds: u64,
+    pub hass_dashboard_refresh_interval_seconds: u64,
 }
 
 impl Default for AppConfig {
@@ -60,6 +64,10 @@ impl Default for AppConfig {
             night_mode_end: "06:00".to_string(),
             frame_poll_interval_seconds: 15,
             display_fit_mode: DisplayFitMode::Contain,
+            hass_dashboard_enabled: false,
+            hass_dashboard_url: "http://localhost:8080".to_string(),
+            hass_dashboard_display_seconds: 30,
+            hass_dashboard_refresh_interval_seconds: 60,
         }
     }
 }
@@ -86,6 +94,10 @@ struct FileConfig {
     night_mode_end: Option<String>,
     frame_poll_interval_seconds: Option<u64>,
     display_fit_mode: Option<String>,
+    hass_dashboard_enabled: Option<bool>,
+    hass_dashboard_url: Option<String>,
+    hass_dashboard_display_seconds: Option<u64>,
+    hass_dashboard_refresh_interval_seconds: Option<u64>,
 }
 
 impl AppConfig {
@@ -146,6 +158,18 @@ fn apply_file(config: &mut AppConfig, path: &Path) -> Result<()> {
     if let Some(v) = parsed.display_fit_mode {
         config.display_fit_mode = DisplayFitMode::parse(&v)?;
     }
+    if let Some(v) = parsed.hass_dashboard_enabled {
+        config.hass_dashboard_enabled = v;
+    }
+    if let Some(v) = parsed.hass_dashboard_url {
+        config.hass_dashboard_url = v;
+    }
+    if let Some(v) = parsed.hass_dashboard_display_seconds {
+        config.hass_dashboard_display_seconds = v;
+    }
+    if let Some(v) = parsed.hass_dashboard_refresh_interval_seconds {
+        config.hass_dashboard_refresh_interval_seconds = v;
+    }
 
     Ok(())
 }
@@ -157,9 +181,7 @@ fn apply_env(config: &mut AppConfig) -> Result<()> {
             .with_context(|| "invalid PHOTOFRAME_BIND_ADDRESS")?;
     }
     if let Ok(v) = env::var("PHOTOFRAME_PORT") {
-        config.port = v
-            .parse()
-            .with_context(|| "invalid PHOTOFRAME_PORT")?;
+        config.port = v.parse().with_context(|| "invalid PHOTOFRAME_PORT")?;
     }
     if let Ok(v) = env::var("PHOTOFRAME_IMAGE_DIR") {
         config.image_dir = PathBuf::from(v);
@@ -185,6 +207,24 @@ fn apply_env(config: &mut AppConfig) -> Result<()> {
     }
     if let Ok(v) = env::var("PHOTOFRAME_DISPLAY_FIT_MODE") {
         config.display_fit_mode = DisplayFitMode::parse(&v)?;
+    }
+    if let Ok(v) = env::var("PHOTOFRAME_HASS_DASHBOARD_ENABLED") {
+        config.hass_dashboard_enabled = v
+            .parse()
+            .with_context(|| "invalid PHOTOFRAME_HASS_DASHBOARD_ENABLED")?;
+    }
+    if let Ok(v) = env::var("PHOTOFRAME_HASS_DASHBOARD_URL") {
+        config.hass_dashboard_url = v;
+    }
+    if let Ok(v) = env::var("PHOTOFRAME_HASS_DASHBOARD_DISPLAY_SECONDS") {
+        config.hass_dashboard_display_seconds = v
+            .parse()
+            .with_context(|| "invalid PHOTOFRAME_HASS_DASHBOARD_DISPLAY_SECONDS")?;
+    }
+    if let Ok(v) = env::var("PHOTOFRAME_HASS_DASHBOARD_REFRESH_INTERVAL_SECONDS") {
+        config.hass_dashboard_refresh_interval_seconds = v
+            .parse()
+            .with_context(|| "invalid PHOTOFRAME_HASS_DASHBOARD_REFRESH_INTERVAL_SECONDS")?;
     }
 
     Ok(())
@@ -212,6 +252,46 @@ fn validate(config: &AppConfig) -> Result<()> {
     validate_hh_mm("night_mode_start", &config.night_mode_start)?;
     validate_hh_mm("night_mode_end", &config.night_mode_end)?;
 
+    validate_seconds_bound(
+        "hass_dashboard_display_seconds",
+        config.hass_dashboard_display_seconds,
+    )?;
+    validate_seconds_bound(
+        "hass_dashboard_refresh_interval_seconds",
+        config.hass_dashboard_refresh_interval_seconds,
+    )?;
+    if config.hass_dashboard_enabled {
+        validate_hass_dashboard_url(&config.hass_dashboard_url)?;
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_seconds_bound(field: &str, value: u64) -> Result<()> {
+    if value == 0 || value > 86400 {
+        bail!("{field} must be between 1 and 86400");
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_hass_dashboard_url(url: &str) -> Result<()> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        bail!("hass_dashboard_url cannot be empty");
+    }
+    if trimmed.contains('#') {
+        bail!("hass_dashboard_url must not contain a URL fragment ('#')");
+    }
+    let rest = if let Some(stripped) = trimmed.strip_prefix("http://") {
+        stripped
+    } else if let Some(stripped) = trimmed.strip_prefix("https://") {
+        stripped
+    } else {
+        bail!("hass_dashboard_url must start with http:// or https://");
+    };
+    if rest.trim().is_empty() {
+        bail!("hass_dashboard_url must contain a host");
+    }
     Ok(())
 }
 
@@ -262,7 +342,7 @@ mod tests {
         assert!(parse_hh_mm("test", "24:00").is_err());
         assert!(parse_hh_mm("test", "12:60").is_err());
         assert!(parse_hh_mm("test", "8:30").is_err()); // Not 2-digit hour
-        assert!(parse_hh_mm("test", "08:3").is_err());  // Not 2-digit minute
+        assert!(parse_hh_mm("test", "08:3").is_err()); // Not 2-digit minute
         assert!(parse_hh_mm("test", "+8:30").is_err());
         assert!(parse_hh_mm("test", "invalid").is_err());
         assert!(parse_hh_mm("test", "12:34:56").is_err());
@@ -270,9 +350,18 @@ mod tests {
 
     #[test]
     fn test_display_fit_mode_parse() {
-        assert!(matches!(DisplayFitMode::parse("contain").unwrap(), DisplayFitMode::Contain));
-        assert!(matches!(DisplayFitMode::parse("COVER").unwrap(), DisplayFitMode::Cover));
-        assert!(matches!(DisplayFitMode::parse("  contain ").unwrap(), DisplayFitMode::Contain));
+        assert!(matches!(
+            DisplayFitMode::parse("contain").unwrap(),
+            DisplayFitMode::Contain
+        ));
+        assert!(matches!(
+            DisplayFitMode::parse("COVER").unwrap(),
+            DisplayFitMode::Cover
+        ));
+        assert!(matches!(
+            DisplayFitMode::parse("  contain ").unwrap(),
+            DisplayFitMode::Contain
+        ));
         assert!(DisplayFitMode::parse("stretch").is_err());
     }
 
@@ -307,5 +396,67 @@ mod tests {
             ..Default::default()
         };
         assert!(validate(&config_bad_night).is_err());
+
+        let config_bad_hass_display = AppConfig {
+            hass_dashboard_display_seconds: 0,
+            ..Default::default()
+        };
+        assert!(validate(&config_bad_hass_display).is_err());
+
+        let config_overflow_hass_display = AppConfig {
+            hass_dashboard_display_seconds: 86401,
+            ..Default::default()
+        };
+        assert!(validate(&config_overflow_hass_display).is_err());
+
+        let config_bad_hass_refresh = AppConfig {
+            hass_dashboard_refresh_interval_seconds: 0,
+            ..Default::default()
+        };
+        assert!(validate(&config_bad_hass_refresh).is_err());
+
+        let config_overflow_hass_refresh = AppConfig {
+            hass_dashboard_refresh_interval_seconds: 86401,
+            ..Default::default()
+        };
+        assert!(validate(&config_overflow_hass_refresh).is_err());
+
+        let config_bad_hass_url = AppConfig {
+            hass_dashboard_enabled: true,
+            hass_dashboard_url: "ftp://localhost:8080".to_string(),
+            ..Default::default()
+        };
+        assert!(validate(&config_bad_hass_url).is_err());
+
+        let config_empty_hass_url = AppConfig {
+            hass_dashboard_enabled: true,
+            hass_dashboard_url: "".to_string(),
+            ..Default::default()
+        };
+        assert!(validate(&config_empty_hass_url).is_err());
+
+        // Empty URL is permitted if dashboard is disabled
+        let config_disabled_empty_url = AppConfig {
+            hass_dashboard_enabled: false,
+            hass_dashboard_url: "".to_string(),
+            ..Default::default()
+        };
+        assert!(validate(&config_disabled_empty_url).is_ok());
+    }
+
+    #[test]
+    fn test_validate_hass_dashboard_url() {
+        assert!(validate_hass_dashboard_url("http://localhost:8080").is_ok());
+        assert!(
+            validate_hass_dashboard_url("https://homeassistant.local:8123/screenshot.png").is_ok()
+        );
+        assert!(validate_hass_dashboard_url("http://192.168.1.50:8080").is_ok());
+        assert!(validate_hass_dashboard_url("ftp://example.com").is_err());
+        assert!(validate_hass_dashboard_url("").is_err());
+        assert!(validate_hass_dashboard_url("   ").is_err());
+        assert!(validate_hass_dashboard_url("http://").is_err());
+        assert!(validate_hass_dashboard_url("https://").is_err());
+        assert!(validate_hass_dashboard_url("http://localhost:8080#section").is_err());
+        assert!(validate_hass_dashboard_url("localhost:8080").is_err());
     }
 }

@@ -7,3 +7,9 @@ night_mode_start: "20:00"
 night_mode_end: "06:00"
 frame_poll_interval_seconds: 15
 display_fit_mode: contain
+
+# Home Assistant Dashboard Screenshot Display Settings
+hass_dashboard_enabled: false
+hass_dashboard_url: "http://localhost:8080"
+hass_dashboard_display_seconds: 30
+hass_dashboard_refresh_interval_seconds: 60

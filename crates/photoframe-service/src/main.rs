@@ -133,8 +133,8 @@ async fn shutdown_signal() {
     {
         use tokio::signal::unix::{SignalKind, signal};
 
-        let mut terminate_signal = signal(SignalKind::terminate())
-            .expect("registering SIGTERM handler should succeed");
+        let mut terminate_signal =
+            signal(SignalKind::terminate()).expect("registering SIGTERM handler should succeed");
 
         tokio::select! {
             signal = tokio::signal::ctrl_c() => {
@@ -195,7 +195,12 @@ mod tests {
         let (app, img_dir, db_path) = setup_test_app();
 
         let response = app
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -226,6 +231,10 @@ mod tests {
         let body_str = String::from_utf8(body.to_vec()).unwrap();
         assert!(body_str.contains("slideshow_interval_seconds"));
         assert!(body_str.contains("night_mode_active"));
+        assert!(body_str.contains("hass_dashboard_enabled"));
+        assert!(body_str.contains("hass_dashboard_url"));
+        assert!(body_str.contains("hass_dashboard_display_seconds"));
+        assert!(body_str.contains("hass_dashboard_refresh_interval_seconds"));
         assert!(body_str.contains("images"));
 
         let _ = std::fs::remove_dir_all(img_dir.parent().unwrap());
@@ -248,9 +257,21 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        let initial_body = response.into_body().collect().await.unwrap().to_bytes();
+        let initial_str = String::from_utf8(initial_body.to_vec()).unwrap();
+        assert!(initial_str.contains(r#""hass_dashboard_enabled":false"#));
+        assert!(initial_str.contains(r#""hass_dashboard_url":"http://localhost:8080""#));
 
         // 2. POST update settings
-        let payload = r#"{"slideshow_interval_seconds":45,"night_mode_start":"21:30","night_mode_end":"07:00"}"#;
+        let payload = r#"{
+            "slideshow_interval_seconds": 45,
+            "night_mode_start": "21:30",
+            "night_mode_end": "07:00",
+            "hass_dashboard_enabled": true,
+            "hass_dashboard_url": "http://192.168.1.100:8080/screenshot.png",
+            "hass_dashboard_display_seconds": 25,
+            "hass_dashboard_refresh_interval_seconds": 50
+        }"#;
         let response = app
             .clone()
             .oneshot(
@@ -267,6 +288,7 @@ mod tests {
 
         // 3. GET settings again and verify updated values
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri("/admin/api/settings")
@@ -281,6 +303,121 @@ mod tests {
         assert!(body_str.contains(r#""slideshow_interval_seconds":45"#));
         assert!(body_str.contains(r#""night_mode_start":"21:30""#));
         assert!(body_str.contains(r#""night_mode_end":"07:00""#));
+        assert!(body_str.contains(r#""hass_dashboard_enabled":true"#));
+        assert!(
+            body_str.contains(r#""hass_dashboard_url":"http://192.168.1.100:8080/screenshot.png""#)
+        );
+        assert!(body_str.contains(r#""hass_dashboard_display_seconds":25"#));
+        assert!(body_str.contains(r#""hass_dashboard_refresh_interval_seconds":50"#));
+
+        // 4. POST invalid settings (bad URL) returns BAD_REQUEST
+        let bad_payload = r#"{
+            "slideshow_interval_seconds": 45,
+            "night_mode_start": "21:30",
+            "night_mode_end": "07:00",
+            "hass_dashboard_enabled": true,
+            "hass_dashboard_url": "invalid-url",
+            "hass_dashboard_display_seconds": 25,
+            "hass_dashboard_refresh_interval_seconds": 50
+        }"#;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/api/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(bad_payload))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        // 5. Partial update: updating only slideshow_interval_seconds preserves HASS settings
+        let partial_payload = r#"{ "slideshow_interval_seconds": 60 }"#;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/api/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(partial_payload))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/api/settings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body_str.contains(r#""slideshow_interval_seconds":60"#));
+        assert!(body_str.contains(r#""hass_dashboard_enabled":true"#));
+        assert!(
+            body_str.contains(r#""hass_dashboard_url":"http://192.168.1.100:8080/screenshot.png""#)
+        );
+        assert!(body_str.contains(r#""hass_dashboard_display_seconds":25"#));
+
+        // 6. Disabling dashboard with empty URL succeeds
+        let disable_payload = r#"{
+            "hass_dashboard_enabled": false,
+            "hass_dashboard_url": ""
+        }"#;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/api/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(disable_payload))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        // 7. Bounds checking: 0 and >86400 return BAD_REQUEST
+        let bad_interval = r#"{ "hass_dashboard_refresh_interval_seconds": 0 }"#;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/api/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(bad_interval))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let bad_display = r#"{ "hass_dashboard_display_seconds": 90000 }"#;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/api/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(bad_display))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         let _ = std::fs::remove_dir_all(img_dir.parent().unwrap());
         let _ = std::fs::remove_file(db_path);
@@ -292,7 +429,12 @@ mod tests {
 
         let response = app
             .clone()
-            .oneshot(Request::builder().uri("/admin").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -309,9 +451,16 @@ mod tests {
         let admin_html = String::from_utf8(admin_body.to_vec()).unwrap();
         assert!(admin_html.contains("repeat(5, 1fr)"));
         assert!(!admin_html.contains("image-meta"));
+        assert!(admin_html.contains("hass-settings-form"));
+        assert!(admin_html.contains("Home Assistant Dashboard"));
 
         let response = app
-            .oneshot(Request::builder().uri("/frame").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/frame")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -324,6 +473,9 @@ mod tests {
                 .unwrap()
                 .contains("text/html")
         );
+        let frame_body = response.into_body().collect().await.unwrap().to_bytes();
+        let frame_html = String::from_utf8(frame_body.to_vec()).unwrap();
+        assert!(frame_html.contains("hass-dashboard-image"));
 
         let _ = std::fs::remove_dir_all(img_dir.parent().unwrap());
         let _ = std::fs::remove_file(db_path);
