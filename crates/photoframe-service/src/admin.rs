@@ -87,6 +87,34 @@ pub(crate) struct AdminSettingsPayload {
     hass_dashboard_refresh_interval_seconds: u64,
 }
 
+impl From<AdminSettings> for AdminSettingsPayload {
+    fn from(s: AdminSettings) -> Self {
+        Self {
+            slideshow_interval_seconds: s.slideshow_interval_seconds,
+            night_mode_start: s.night_mode_start,
+            night_mode_end: s.night_mode_end,
+            hass_dashboard_enabled: s.hass_dashboard_enabled,
+            hass_dashboard_url: s.hass_dashboard_url,
+            hass_dashboard_display_seconds: s.hass_dashboard_display_seconds,
+            hass_dashboard_refresh_interval_seconds: s.hass_dashboard_refresh_interval_seconds,
+        }
+    }
+}
+
+impl From<AdminSettingsPayload> for AdminSettings {
+    fn from(p: AdminSettingsPayload) -> Self {
+        Self {
+            slideshow_interval_seconds: p.slideshow_interval_seconds,
+            night_mode_start: p.night_mode_start,
+            night_mode_end: p.night_mode_end,
+            hass_dashboard_enabled: p.hass_dashboard_enabled,
+            hass_dashboard_url: p.hass_dashboard_url,
+            hass_dashboard_display_seconds: p.hass_dashboard_display_seconds,
+            hass_dashboard_refresh_interval_seconds: p.hass_dashboard_refresh_interval_seconds,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct ReorderPayload {
     ordered_ids: Vec<i64>,
@@ -283,15 +311,7 @@ pub(crate) async fn get_settings(
             .await
             .map_err(|err| ApiError::internal(anyhow!("spawn_blocking error: {err}")))?
             .map_err(ApiError::internal)?;
-    Ok(Json(AdminSettingsPayload {
-        slideshow_interval_seconds: settings.slideshow_interval_seconds,
-        night_mode_start: settings.night_mode_start,
-        night_mode_end: settings.night_mode_end,
-        hass_dashboard_enabled: settings.hass_dashboard_enabled,
-        hass_dashboard_url: settings.hass_dashboard_url,
-        hass_dashboard_display_seconds: settings.hass_dashboard_display_seconds,
-        hass_dashboard_refresh_interval_seconds: settings.hass_dashboard_refresh_interval_seconds,
-    }))
+    Ok(Json(settings.into()))
 }
 
 pub(crate) async fn update_settings(
@@ -301,15 +321,7 @@ pub(crate) async fn update_settings(
     validate_settings_payload(&payload).map_err(|err| ApiError::bad_request(err.to_string()))?;
 
     let db_path = state.config.database_path.clone();
-    let to_save = AdminSettings {
-        slideshow_interval_seconds: payload.slideshow_interval_seconds,
-        night_mode_start: payload.night_mode_start,
-        night_mode_end: payload.night_mode_end,
-        hass_dashboard_enabled: payload.hass_dashboard_enabled,
-        hass_dashboard_url: payload.hass_dashboard_url,
-        hass_dashboard_display_seconds: payload.hass_dashboard_display_seconds,
-        hass_dashboard_refresh_interval_seconds: payload.hass_dashboard_refresh_interval_seconds,
-    };
+    let to_save: AdminSettings = payload.into();
     tokio::task::spawn_blocking(move || db::save_admin_settings(&db_path, &to_save))
         .await
         .map_err(|err| ApiError::internal(anyhow!("spawn_blocking error: {err}")))?

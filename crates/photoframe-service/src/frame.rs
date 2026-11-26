@@ -210,9 +210,7 @@ const FRAME_HTML: &str = r#"<!doctype html>
         : 60;
       const seconds = Math.max(1, configuredInterval);
       fetchDashboardImage();
-      hassRefreshTimer = setInterval(() => {
-        fetchDashboardImage();
-      }, seconds * 1000);
+      hassRefreshTimer = setInterval(fetchDashboardImage, seconds * 1000);
     }
 
     function showDashboard() {
@@ -228,9 +226,7 @@ const FRAME_HTML: &str = r#"<!doctype html>
       const durationSeconds = (currentState && currentState.hass_dashboard_display_seconds)
         ? currentState.hass_dashboard_display_seconds
         : 30;
-      hassDisplayTimer = setTimeout(() => {
-        hideDashboard();
-      }, Math.max(1, durationSeconds) * 1000);
+      hassDisplayTimer = setTimeout(hideDashboard, Math.max(1, durationSeconds) * 1000);
     }
 
     function hideDashboard() {
@@ -348,11 +344,12 @@ const FRAME_HTML: &str = r#"<!doctype html>
       keepCurrentImageIfPossible(previousState, nextState);
       currentState = nextState;
 
-      const nightChanged = !previousState || previousState.night_mode_active !== nextState.night_mode_active;
-      const intervalChanged = !previousState || previousState.slideshow_interval_seconds !== nextState.slideshow_interval_seconds;
-      const imagesChanged = !previousState || JSON.stringify(previousState.images) !== JSON.stringify(nextState.images);
-      const pollChanged = !previousState || previousState.frame_poll_interval_seconds !== nextState.frame_poll_interval_seconds;
-      const hassChanged = !previousState
+      const isInitial = !previousState;
+      const nightChanged = isInitial || previousState.night_mode_active !== nextState.night_mode_active;
+      const intervalChanged = isInitial || previousState.slideshow_interval_seconds !== nextState.slideshow_interval_seconds;
+      const imagesChanged = isInitial || JSON.stringify(previousState.images) !== JSON.stringify(nextState.images);
+      const pollChanged = isInitial || previousState.frame_poll_interval_seconds !== nextState.frame_poll_interval_seconds;
+      const hassChanged = isInitial
         || previousState.hass_dashboard_enabled !== nextState.hass_dashboard_enabled
         || previousState.hass_dashboard_url !== nextState.hass_dashboard_url
         || previousState.hass_dashboard_refresh_interval_seconds !== nextState.hass_dashboard_refresh_interval_seconds;
@@ -361,7 +358,7 @@ const FRAME_HTML: &str = r#"<!doctype html>
         hideDashboard();
       }
 
-      if (nightChanged || imagesChanged || !previousState) {
+      if (nightChanged || imagesChanged) {
         renderCurrentImage();
       }
 

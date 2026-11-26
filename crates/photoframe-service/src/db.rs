@@ -47,8 +47,8 @@ pub struct AdminSettings {
     pub hass_dashboard_refresh_interval_seconds: u64,
 }
 
-impl AdminSettings {
-    pub fn from_config(config: &crate::config::AppConfig) -> Self {
+impl From<&crate::config::AppConfig> for AdminSettings {
+    fn from(config: &crate::config::AppConfig) -> Self {
         Self {
             slideshow_interval_seconds: config.slideshow_interval_seconds,
             night_mode_start: config.night_mode_start.clone(),
@@ -58,6 +58,12 @@ impl AdminSettings {
             hass_dashboard_display_seconds: config.hass_dashboard_display_seconds,
             hass_dashboard_refresh_interval_seconds: config.hass_dashboard_refresh_interval_seconds,
         }
+    }
+}
+
+impl AdminSettings {
+    pub fn from_config(config: &crate::config::AppConfig) -> Self {
+        Self::from(config)
     }
 }
 
