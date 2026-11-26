@@ -4,7 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use axum::{
     Json,
     extract::{Multipart, Path as AxumPath, State},
@@ -16,7 +16,7 @@ use tokio::fs;
 
 use crate::{
     AppState,
-    config::validate_hh_mm,
+    config::{validate_hh_mm, validate_seconds_bound},
     db::{self, AdminSettings, StoredImage},
 };
 
@@ -80,6 +80,43 @@ pub(crate) struct UpdateSettingsPayload {
     pub hass_dashboard_url: Option<String>,
     pub hass_dashboard_display_seconds: Option<u64>,
     pub hass_dashboard_refresh_interval_seconds: Option<u64>,
+}
+
+impl UpdateSettingsPayload {
+    pub(crate) fn apply_to(&self, current: &mut AdminSettings) -> Result<()> {
+        if let Some(v) = self.slideshow_interval_seconds {
+            if v == 0 {
+                bail!("slideshow_interval_seconds must be greater than 0");
+            }
+            current.slideshow_interval_seconds = v;
+        }
+        if let Some(ref v) = self.night_mode_start {
+            validate_hh_mm("night_mode_start", v)?;
+            current.night_mode_start = v.clone();
+        }
+        if let Some(ref v) = self.night_mode_end {
+            validate_hh_mm("night_mode_end", v)?;
+            current.night_mode_end = v.clone();
+        }
+        if let Some(v) = self.hass_dashboard_enabled {
+            current.hass_dashboard_enabled = v;
+        }
+        if let Some(ref v) = self.hass_dashboard_url {
+            current.hass_dashboard_url = v.clone();
+        }
+        if let Some(v) = self.hass_dashboard_display_seconds {
+            validate_seconds_bound("hass_dashboard_display_seconds", v)?;
+            current.hass_dashboard_display_seconds = v;
+        }
+        if let Some(v) = self.hass_dashboard_refresh_interval_seconds {
+            validate_seconds_bound("hass_dashboard_refresh_interval_seconds", v)?;
+            current.hass_dashboard_refresh_interval_seconds = v;
+        }
+        if current.hass_dashboard_enabled {
+            crate::config::validate_hass_dashboard_url(&current.hass_dashboard_url)?;
+        }
+        Ok(())
+    }
 }
 
 impl From<AdminSettings> for AdminSettingsPayload {
@@ -310,49 +347,9 @@ pub(crate) async fn update_settings(
     .map_err(|err| ApiError::internal(anyhow!("spawn_blocking error: {err}")))?
     .map_err(ApiError::internal)?;
 
-    if let Some(v) = payload.slideshow_interval_seconds {
-        if v == 0 {
-            return Err(ApiError::bad_request(
-                "slideshow_interval_seconds must be greater than 0",
-            ));
-        }
-        current.slideshow_interval_seconds = v;
-    }
-    if let Some(v) = payload.night_mode_start {
-        validate_hh_mm("night_mode_start", &v).map_err(|e| ApiError::bad_request(e.to_string()))?;
-        current.night_mode_start = v;
-    }
-    if let Some(v) = payload.night_mode_end {
-        validate_hh_mm("night_mode_end", &v).map_err(|e| ApiError::bad_request(e.to_string()))?;
-        current.night_mode_end = v;
-    }
-    if let Some(v) = payload.hass_dashboard_enabled {
-        current.hass_dashboard_enabled = v;
-    }
-    if let Some(v) = payload.hass_dashboard_url {
-        current.hass_dashboard_url = v;
-    }
-    if let Some(v) = payload.hass_dashboard_display_seconds {
-        if v == 0 || v > 86400 {
-            return Err(ApiError::bad_request(
-                "hass_dashboard_display_seconds must be between 1 and 86400",
-            ));
-        }
-        current.hass_dashboard_display_seconds = v;
-    }
-    if let Some(v) = payload.hass_dashboard_refresh_interval_seconds {
-        if v == 0 || v > 86400 {
-            return Err(ApiError::bad_request(
-                "hass_dashboard_refresh_interval_seconds must be between 1 and 86400",
-            ));
-        }
-        current.hass_dashboard_refresh_interval_seconds = v;
-    }
-
-    if current.hass_dashboard_enabled {
-        crate::config::validate_hass_dashboard_url(&current.hass_dashboard_url)
-            .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    }
+    payload
+        .apply_to(&mut current)
+        .map_err(|err| ApiError::bad_request(err.to_string()))?;
 
     tokio::task::spawn_blocking(move || db::save_admin_settings(&db_path, &current))
         .await
@@ -799,5 +796,56 @@ mod tests {
         assert!(!stored.contains(' '));
         assert!(!stored.contains('('));
         assert!(!stored.contains(')'));
+    }
+
+    #[test]
+    fn test_update_settings_payload_apply_to() {
+        let mut settings = AdminSettings {
+            slideshow_interval_seconds: 30,
+            night_mode_start: "22:00".to_string(),
+            night_mode_end: "06:00".to_string(),
+            hass_dashboard_enabled: false,
+            hass_dashboard_url: "http://localhost:8080".to_string(),
+            hass_dashboard_display_seconds: 30,
+            hass_dashboard_refresh_interval_seconds: 60,
+        };
+
+        // Partial update modifies only specified fields
+        let payload = UpdateSettingsPayload {
+            slideshow_interval_seconds: Some(45),
+            night_mode_start: None,
+            night_mode_end: None,
+            hass_dashboard_enabled: None,
+            hass_dashboard_url: None,
+            hass_dashboard_display_seconds: None,
+            hass_dashboard_refresh_interval_seconds: None,
+        };
+        payload.apply_to(&mut settings).unwrap();
+        assert_eq!(settings.slideshow_interval_seconds, 45);
+        assert_eq!(settings.night_mode_start, "22:00");
+
+        // Invalid zero slideshow interval fails
+        let invalid = UpdateSettingsPayload {
+            slideshow_interval_seconds: Some(0),
+            night_mode_start: None,
+            night_mode_end: None,
+            hass_dashboard_enabled: None,
+            hass_dashboard_url: None,
+            hass_dashboard_display_seconds: None,
+            hass_dashboard_refresh_interval_seconds: None,
+        };
+        assert!(invalid.apply_to(&mut settings).is_err());
+
+        // Enabling with empty URL fails validation
+        let bad_url = UpdateSettingsPayload {
+            slideshow_interval_seconds: None,
+            night_mode_start: None,
+            night_mode_end: None,
+            hass_dashboard_enabled: Some(true),
+            hass_dashboard_url: Some("".to_string()),
+            hass_dashboard_display_seconds: None,
+            hass_dashboard_refresh_interval_seconds: None,
+        };
+        assert!(bad_url.apply_to(&mut settings).is_err());
     }
 }

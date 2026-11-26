@@ -252,18 +252,25 @@ fn validate(config: &AppConfig) -> Result<()> {
     validate_hh_mm("night_mode_start", &config.night_mode_start)?;
     validate_hh_mm("night_mode_end", &config.night_mode_end)?;
 
-    if config.hass_dashboard_display_seconds == 0 || config.hass_dashboard_display_seconds > 86400 {
-        bail!("hass_dashboard_display_seconds must be between 1 and 86400");
-    }
-    if config.hass_dashboard_refresh_interval_seconds == 0
-        || config.hass_dashboard_refresh_interval_seconds > 86400
-    {
-        bail!("hass_dashboard_refresh_interval_seconds must be between 1 and 86400");
-    }
+    validate_seconds_bound(
+        "hass_dashboard_display_seconds",
+        config.hass_dashboard_display_seconds,
+    )?;
+    validate_seconds_bound(
+        "hass_dashboard_refresh_interval_seconds",
+        config.hass_dashboard_refresh_interval_seconds,
+    )?;
     if config.hass_dashboard_enabled {
         validate_hass_dashboard_url(&config.hass_dashboard_url)?;
     }
 
+    Ok(())
+}
+
+pub(crate) fn validate_seconds_bound(field: &str, value: u64) -> Result<()> {
+    if value == 0 || value > 86400 {
+        bail!("{field} must be between 1 and 86400");
+    }
     Ok(())
 }
 

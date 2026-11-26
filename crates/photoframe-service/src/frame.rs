@@ -150,45 +150,33 @@ const FRAME_HTML: &str = r#"<!doctype html>
     let imageIndex = 0;
 
     function clearRotationTimer() {
-      if (rotationTimer) {
-        clearInterval(rotationTimer);
-        rotationTimer = null;
-      }
+      clearInterval(rotationTimer);
+      rotationTimer = null;
     }
 
     function clearPollTimer() {
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = null;
-      }
+      clearInterval(pollTimer);
+      pollTimer = null;
     }
 
     function clearHassRefreshTimer() {
-      if (hassRefreshTimer) {
-        clearInterval(hassRefreshTimer);
-        hassRefreshTimer = null;
-      }
+      clearInterval(hassRefreshTimer);
+      hassRefreshTimer = null;
     }
 
     function clearHassDisplayTimer() {
-      if (hassDisplayTimer) {
-        clearTimeout(hassDisplayTimer);
-        hassDisplayTimer = null;
-      }
+      clearTimeout(hassDisplayTimer);
+      hassDisplayTimer = null;
     }
 
     function isDashboardEnabled() {
-      return Boolean(currentState && currentState.hass_dashboard_enabled && currentState.hass_dashboard_url);
+      return Boolean(currentState && currentState.hass_dashboard_enabled && currentState.hass_dashboard_url && currentState.hass_dashboard_url.trim());
     }
 
     function fetchDashboardImage(force = false) {
-      if (!isDashboardEnabled()) return;
-      if (currentState.night_mode_active && !force) return;
-      if (isFetchingHass) return;
+      if (!isDashboardEnabled() || (currentState.night_mode_active && !force) || isFetchingHass) return;
 
       const baseUrl = currentState.hass_dashboard_url.trim();
-      if (!baseUrl) return;
-
       isFetchingHass = true;
       const cacheBustUrl = `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}_t=${Date.now()}`;
       const preloadImg = new Image();
@@ -219,12 +207,9 @@ const FRAME_HTML: &str = r#"<!doctype html>
         if (hassDashboardVisible) hideDashboard();
         return;
       }
-      const configuredInterval = (currentState && currentState.hass_dashboard_refresh_interval_seconds)
-        ? currentState.hass_dashboard_refresh_interval_seconds
-        : 60;
-      const seconds = Math.max(1, configuredInterval);
+      const interval = (currentState && currentState.hass_dashboard_refresh_interval_seconds) || 60;
       fetchDashboardImage();
-      hassRefreshTimer = setInterval(fetchDashboardImage, seconds * 1000);
+      hassRefreshTimer = setInterval(fetchDashboardImage, Math.max(1, interval) * 1000);
     }
 
     function showDashboard() {
@@ -243,10 +228,8 @@ const FRAME_HTML: &str = r#"<!doctype html>
         fetchDashboardImage(true);
       }
 
-      const durationSeconds = (currentState && currentState.hass_dashboard_display_seconds)
-        ? currentState.hass_dashboard_display_seconds
-        : 30;
-      hassDisplayTimer = setTimeout(hideDashboard, Math.max(1, durationSeconds) * 1000);
+      const duration = (currentState && currentState.hass_dashboard_display_seconds) || 30;
+      hassDisplayTimer = setTimeout(hideDashboard, Math.max(1, duration) * 1000);
     }
 
     function hideDashboard() {
@@ -336,13 +319,10 @@ const FRAME_HTML: &str = r#"<!doctype html>
 
     function restartPollTimer() {
       clearPollTimer();
-      const configuredSeconds = (currentState && currentState.frame_poll_interval_seconds)
-        ? currentState.frame_poll_interval_seconds
-        : 15;
-      const seconds = Math.max(1, configuredSeconds);
+      const interval = (currentState && currentState.frame_poll_interval_seconds) || 15;
       pollTimer = setInterval(() => {
         refreshState().catch((error) => setOverlay(`Frame refresh error: ${error.message}`));
-      }, seconds * 1000);
+      }, Math.max(1, interval) * 1000);
     }
 
     function keepCurrentImageIfPossible(previousState, nextState) {
