@@ -324,7 +324,7 @@ photoframe/
 
    ```yaml
    bind_address: 127.0.0.1
-   port: 8080
+   port: 8181
    image_dir: ./images
    database_path: ./photoframe.sqlite
    slideshow_interval_seconds: 10
@@ -347,9 +347,9 @@ photoframe/
    ```
 
 4. **Access the application in your browser:**
-   - **Admin UI:** [http://localhost:8080/admin](http://localhost:8080/admin)
-   - **Frame Display:** [http://localhost:8080/frame](http://localhost:8080/frame)
-   - **Health Endpoint:** [http://localhost:8080/health](http://localhost:8080/health)
+   - **Admin UI:** [http://localhost:8181/admin](http://localhost:8181/admin)
+   - **Frame Display:** [http://localhost:8181/frame](http://localhost:8181/frame)
+   - **Health Endpoint:** [http://localhost:8181/health](http://localhost:8181/health)
 
 ---
 
