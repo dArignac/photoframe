@@ -41,6 +41,24 @@ pub struct AdminSettings {
     pub slideshow_interval_seconds: u64,
     pub night_mode_start: String,
     pub night_mode_end: String,
+    pub hass_dashboard_enabled: bool,
+    pub hass_dashboard_url: String,
+    pub hass_dashboard_display_seconds: u64,
+    pub hass_dashboard_refresh_interval_seconds: u64,
+}
+
+impl AdminSettings {
+    pub fn from_config(config: &crate::config::AppConfig) -> Self {
+        Self {
+            slideshow_interval_seconds: config.slideshow_interval_seconds,
+            night_mode_start: config.night_mode_start.clone(),
+            night_mode_end: config.night_mode_end.clone(),
+            hass_dashboard_enabled: config.hass_dashboard_enabled,
+            hass_dashboard_url: config.hass_dashboard_url.clone(),
+            hass_dashboard_display_seconds: config.hass_dashboard_display_seconds,
+            hass_dashboard_refresh_interval_seconds: config.hass_dashboard_refresh_interval_seconds,
+        }
+    }
 }
 
 pub fn initialize(database_path: &Path) -> Result<()> {
@@ -92,9 +110,11 @@ pub fn insert_image(database_path: &Path, file_name: &str) -> Result<StoredImage
         .transaction()
         .context("failed to begin image insert transaction")?;
     let next_sort_index: i64 = tx
-        .query_row("SELECT COALESCE(MAX(sort_index) + 1, 0) FROM images", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT COALESCE(MAX(sort_index) + 1, 0) FROM images",
+            [],
+            |row| row.get(0),
+        )
         .context("failed to compute next image sort index")?;
 
     tx.execute(
@@ -193,13 +213,24 @@ pub fn delete_image(database_path: &Path, image_id: i64) -> Result<Option<String
     Ok(Some(file_name))
 }
 
-pub fn load_admin_settings(database_path: &Path, defaults: &AdminSettings) -> Result<AdminSettings> {
+pub fn load_admin_settings(
+    database_path: &Path,
+    defaults: &AdminSettings,
+) -> Result<AdminSettings> {
     let conn = open_connection(database_path)?;
     let mut settings = defaults.clone();
     let mut stmt = conn
         .prepare(
             "SELECT key, value FROM settings
-             WHERE key IN ('slideshow_interval_seconds', 'night_mode_start', 'night_mode_end')",
+             WHERE key IN (
+                 'slideshow_interval_seconds',
+                 'night_mode_start',
+                 'night_mode_end',
+                 'hass_dashboard_enabled',
+                 'hass_dashboard_url',
+                 'hass_dashboard_display_seconds',
+                 'hass_dashboard_refresh_interval_seconds'
+             )",
         )
         .context("failed to prepare settings query")?;
 
@@ -215,12 +246,28 @@ pub fn load_admin_settings(database_path: &Path, defaults: &AdminSettings) -> Re
         let (key, value) = row.context("failed decoding settings row")?;
         match key.as_str() {
             "slideshow_interval_seconds" => {
-                settings.slideshow_interval_seconds = value.parse().with_context(|| {
-                    "invalid numeric value for settings.slideshow_interval_seconds"
-                })?;
+                settings.slideshow_interval_seconds = value.parse().with_context(
+                    || "invalid numeric value for settings.slideshow_interval_seconds",
+                )?;
             }
             "night_mode_start" => settings.night_mode_start = value,
             "night_mode_end" => settings.night_mode_end = value,
+            "hass_dashboard_enabled" => {
+                settings.hass_dashboard_enabled = value
+                    .parse()
+                    .with_context(|| "invalid boolean value for settings.hass_dashboard_enabled")?;
+            }
+            "hass_dashboard_url" => settings.hass_dashboard_url = value,
+            "hass_dashboard_display_seconds" => {
+                settings.hass_dashboard_display_seconds = value.parse().with_context(
+                    || "invalid numeric value for settings.hass_dashboard_display_seconds",
+                )?;
+            }
+            "hass_dashboard_refresh_interval_seconds" => {
+                settings.hass_dashboard_refresh_interval_seconds = value.parse().with_context(
+                    || "invalid numeric value for settings.hass_dashboard_refresh_interval_seconds",
+                )?;
+            }
             _ => {}
         }
     }
@@ -241,8 +288,25 @@ pub fn save_admin_settings(database_path: &Path, settings: &AdminSettings) -> Re
     )?;
     upsert_setting(&tx, "night_mode_start", &settings.night_mode_start)?;
     upsert_setting(&tx, "night_mode_end", &settings.night_mode_end)?;
+    upsert_setting(
+        &tx,
+        "hass_dashboard_enabled",
+        &settings.hass_dashboard_enabled.to_string(),
+    )?;
+    upsert_setting(&tx, "hass_dashboard_url", &settings.hass_dashboard_url)?;
+    upsert_setting(
+        &tx,
+        "hass_dashboard_display_seconds",
+        &settings.hass_dashboard_display_seconds.to_string(),
+    )?;
+    upsert_setting(
+        &tx,
+        "hass_dashboard_refresh_interval_seconds",
+        &settings.hass_dashboard_refresh_interval_seconds.to_string(),
+    )?;
 
-    tx.commit().context("failed to commit settings transaction")?;
+    tx.commit()
+        .context("failed to commit settings transaction")?;
     Ok(())
 }
 
@@ -301,7 +365,9 @@ fn run_migrations(conn: &mut Connection) -> Result<()> {
     )
     .context("failed to create schema_migrations table")?;
 
-    let tx = conn.transaction().context("failed to begin migration transaction")?;
+    let tx = conn
+        .transaction()
+        .context("failed to begin migration transaction")?;
     let current_version = current_version(&tx)?;
 
     for migration in MIGRATIONS
@@ -403,21 +469,40 @@ mod tests {
             slideshow_interval_seconds: 30,
             night_mode_start: "20:00".to_string(),
             night_mode_end: "06:00".to_string(),
+            hass_dashboard_enabled: false,
+            hass_dashboard_url: "http://localhost:8080".to_string(),
+            hass_dashboard_display_seconds: 30,
+            hass_dashboard_refresh_interval_seconds: 60,
         };
         let loaded = load_admin_settings(&db_path, &defaults).unwrap();
         assert_eq!(loaded.slideshow_interval_seconds, 30);
         assert_eq!(loaded.night_mode_start, "20:00");
+        assert!(!loaded.hass_dashboard_enabled);
+        assert_eq!(loaded.hass_dashboard_url, "http://localhost:8080");
+        assert_eq!(loaded.hass_dashboard_display_seconds, 30);
+        assert_eq!(loaded.hass_dashboard_refresh_interval_seconds, 60);
 
         let updated = AdminSettings {
             slideshow_interval_seconds: 60,
             night_mode_start: "22:00".to_string(),
             night_mode_end: "07:30".to_string(),
+            hass_dashboard_enabled: true,
+            hass_dashboard_url: "http://192.168.1.100:8080/screenshot.png".to_string(),
+            hass_dashboard_display_seconds: 45,
+            hass_dashboard_refresh_interval_seconds: 120,
         };
         save_admin_settings(&db_path, &updated).unwrap();
         let reloaded = load_admin_settings(&db_path, &defaults).unwrap();
         assert_eq!(reloaded.slideshow_interval_seconds, 60);
         assert_eq!(reloaded.night_mode_start, "22:00");
         assert_eq!(reloaded.night_mode_end, "07:30");
+        assert!(reloaded.hass_dashboard_enabled);
+        assert_eq!(
+            reloaded.hass_dashboard_url,
+            "http://192.168.1.100:8080/screenshot.png"
+        );
+        assert_eq!(reloaded.hass_dashboard_display_seconds, 45);
+        assert_eq!(reloaded.hass_dashboard_refresh_interval_seconds, 120);
 
         let _ = std::fs::remove_file(&db_path);
     }
